@@ -1,0 +1,95 @@
+trading:
+  exchange: NSE
+  product_type: MIS
+  watchlist:
+    - RELIANCE
+    - TCS
+    - HDFCBANK
+    - INFY
+    - ICICIBANK
+    - HINDUNILVR
+    - ITC
+    - SBIN
+    - BHARTIARTL
+    - KOTAKBANK
+    - LT
+    - HCLTECH
+    - AXISBANK
+    - ASIANPAINT
+    - MARUTI
+    - SUNPHARMA
+    - TITAN
+    - ULTRACEMCO
+    - NESTLEIND
+    - WIPRO
+    - ADANIENT
+    - ADANIPORTS
+    - BAJFINANCE
+    - BAJAJFINSV
+    - BPCL
+    - BRITANNIA
+    - CIPLA
+    - COALINDIA
+    - DIVISLAB
+    - DRREDDY
+    - EICHERMOT
+    - GRASIM
+    - HDFCLIFE
+    - HEROMOTOCO
+    - HINDALCO
+    - INDUSINDBK
+    - JSWSTEEL
+    - M&M
+    - NTPC
+    - ONGC
+    - POWERGRID
+    - SBILIFE
+    - SHREECEM
+    - TATAMOTORS
+    - TATASTEEL
+    - TATACONSUM
+    - TECHM
+    - TRENT
+    - UPL
+    - BAJAJ-AUTO
+  timeframe: "5minute"
+  market_open: "09:15"
+  market_close: "15:30"
+  square_off_time: "15:15"
+  pre_close_check_time: "15:00"
+
+strategy:
+  name: momentum_vwap_breakout
+  ema_fast: 9
+  ema_slow: 21
+  ema_crossover_lookback: 3
+  rsi_period: 14
+  rsi_entry_threshold: 60
+  volume_sma_period: 20
+  volume_multiplier: 1.5
+  entry_order_type: LIMIT
+  sl_order_type: MARKET
+
+risk:
+  total_capital: 500000
+  max_risk_per_trade_pct: 1.0
+  max_open_positions: 3
+  max_position_size_pct: 20.0
+  order_value_cap: 120000
+  stop_loss_pct: 1.0
+  target_pct: 2.0
+  min_risk_reward: 2.0
+  trailing_sl_enabled: true
+  trailing_sl_activation_pct: 1.0
+  trailing_sl_step_pct: 0.5
+  max_daily_loss: 10000
+  max_trades_per_day: 8
+  max_consecutive_api_errors: 3
+  min_margin_threshold: 25000
+
+scheduler:
+  cycle_interval_seconds: 300
+
+logging:
+  level: INFO
+  retention_days: 30
