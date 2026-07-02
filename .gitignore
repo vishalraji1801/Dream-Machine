@@ -14,8 +14,9 @@ dist/
 build/
 .pytest_cache/
 
-# Logs
-logs/
+# Logs — track directory but not log files
+logs/*
+!logs/.gitkeep
 
 # OS
 .DS_Store
