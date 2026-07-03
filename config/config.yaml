@@ -97,3 +97,4 @@ logging:
 paper_trading:
   enabled: true           # Set to false to go live with real orders
   simulated_slippage_pct: 0.05  # 0.05% slippage applied to simulated fills
+  realistic_fills: true   # LIMIT orders fill only when live price crosses the limit
