@@ -93,3 +93,7 @@ scheduler:
 logging:
   level: INFO
   retention_days: 30
+
+paper_trading:
+  enabled: true           # Set to false to go live with real orders
+  simulated_slippage_pct: 0.05  # 0.05% slippage applied to simulated fills
