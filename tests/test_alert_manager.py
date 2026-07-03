@@ -54,6 +54,7 @@ def test_all_event_templates_render():
         "critical_error":    {"module": "strategy", "message": "Unexpected error"},
         "daily_summary":     {"trades": 3, "profit": 5000, "loss": 2000, "net_pnl": 3000},
         "signal_generated":  {"direction": "BUY", "symbol": "TCS", "entry": 3500.0, "sl": 3465.0, "target": 3570.0},
+        "order_partial":     {"symbol": "TCS", "filled": 4, "requested": 10, "actual_price": 3501.0},
         "bot_stopped":       {"reason": "keyboard interrupt"},
         "api_error":         {"module": "data_fetcher", "message": "Timeout"},
     }
@@ -67,7 +68,7 @@ def test_all_templates_defined():
     expected = {
         "bot_started", "order_placed", "order_filled", "order_rejected",
         "sl_hit", "target_hit", "circuit_breaker", "critical_error", "daily_summary",
-        "signal_generated", "bot_stopped", "api_error",
+        "signal_generated", "bot_stopped", "api_error", "order_partial",
     }
     assert expected == set(_TEMPLATES.keys())
 

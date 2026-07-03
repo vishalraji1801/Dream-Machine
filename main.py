@@ -18,6 +18,7 @@ from src.costs import estimate_intraday_costs, trade_leg_values
 from src.data_fetcher import DataFetcher
 from src.data_streamer import DataStreamer
 from src.logger import get_logger, setup_logging
+from src.market_calendar import MarketCalendar
 from src.order_executor import OrderExecutor
 from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
@@ -85,6 +86,7 @@ def startup() -> dict:
         "positions": PositionManager(cfg),
         "ledger": TradeLedger(),
         "state": StateStore(),
+        "calendar": MarketCalendar(cfg),
     }
 
     saved = ctx["state"].load()
@@ -118,9 +120,68 @@ def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
         logger.info("Paused — entry scan skipped")
 
 
+def _reconcile_positions(ctx: dict) -> None:
+    """Detect positions closed externally — GTT fired server-side or manual
+    close in the Kite app (SCRUM-76). Removes them internally, records P&L
+    from broker averages, and alerts. Prevents double exit orders.
+    Skipped in paper mode (no real broker positions exist)."""
+    if ctx["cfg"].get("paper_trading", {}).get("enabled", False):
+        return
+    positions = ctx["positions"]
+    open_pos = positions.get_open_positions()
+    if not open_pos:
+        return
+
+    try:
+        day_book = ctx["kite"].positions().get("day", [])
+        broker = {p["tradingsymbol"]: p for p in day_book}
+    except Exception as exc:
+        logger.warning(f"Reconciliation skipped — positions() failed: {exc}")
+        return
+
+    for pos in open_pos:
+        bp = broker.get(pos.symbol)
+        if bp is None:
+            logger.warning(f"{pos.symbol}: open internally but absent from broker day book")
+            continue
+        expected = pos.quantity if pos.direction == "BUY" else -pos.quantity
+        if bp["quantity"] == expected:
+            continue
+        if bp["quantity"] == 0:
+            # closed at the broker — GTT fired or manual exit
+            exit_price = bp["sell_price"] if pos.direction == "BUY" else bp["buy_price"]
+            buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
+                                             exit_price, pos.quantity)
+            costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+            pnl = pos.unrealized_pnl(exit_price) - costs
+            positions.remove_position(pos.symbol)
+            ctx["risk"].record_pnl(pnl)
+            ctx["risk"].record_trade()
+            ctx["ledger"].record(
+                symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,
+                entry_price=pos.entry_price, exit_price=exit_price,
+                entry_time=pos.entry_time, exit_time=datetime.now(),
+                pnl=pnl, exit_reason="external_exit",
+            )
+            ctx["alert"].send_raw(
+                f"{pos.symbol} closed at broker (GTT fired or manual) @ {exit_price} | "
+                f"P&L Rs.{pnl:.2f}"
+            )
+            logger.warning(f"{pos.symbol}: reconciled external exit @ {exit_price} | pnl={pnl:.2f}")
+        else:
+            logger.warning(
+                f"{pos.symbol}: quantity mismatch — bot {expected}, broker {bp['quantity']}"
+            )
+            ctx["alert"].send_raw(
+                f"WARNING: {pos.symbol} quantity mismatch — bot {expected}, "
+                f"broker {bp['quantity']}. Check manually."
+            )
+
+
 def _manage_open_positions(ctx: dict) -> None:
     """Update trailing SL and exit positions that hit SL or target."""
     positions = ctx["positions"]
+    _reconcile_positions(ctx)
     open_pos = positions.get_open_positions()
     if not open_pos:
         return
@@ -339,27 +400,39 @@ def _execute_entry(ctx: dict, symbol: str, signal, qty: int) -> None:
         return
 
     result = executor.monitor_order(order_id)
-    if result is None or result["status"] != "COMPLETE":
+    filled = (result or {}).get("filled_quantity", 0)
+
+    if result is None or (result["status"] != "COMPLETE" and filled <= 0):
+        # nothing filled — cancel any resting order and reject
+        executor.cancel_order(order_id)
         reason = (result or {}).get("status_message", "timeout or unknown")
         alert.send("order_rejected", symbol=symbol, reason=reason)
         return
 
+    if result["status"] != "COMPLETE":
+        # partial fill on timeout — cancel the remainder, keep what we got (SCRUM-74)
+        executor.cancel_order(order_id)
+        logger.warning(f"{symbol}: partial fill {filled}/{qty} — remainder cancelled")
+        alert.send("order_partial", symbol=symbol, filled=filled, requested=qty,
+                   actual_price=result["average_price"])
+
+    actual_qty = filled if filled > 0 else qty
     actual_price = result["average_price"]
     slippage = round(actual_price - signal.entry_price, 2)
     positions.add_position(symbol, signal.direction, actual_price,
-                           qty, signal.stop_loss, signal.target)
+                           actual_qty, signal.stop_loss, signal.target)
     risk.record_trade()
     risk.clear_api_errors()
 
-    gtt_id = executor.place_gtt_oco(symbol, signal.direction, qty,
+    gtt_id = executor.place_gtt_oco(symbol, signal.direction, actual_qty,
                                      signal.stop_loss, signal.target, actual_price)
     if gtt_id:
         positions.set_gtt_id(symbol, gtt_id)
 
     alert.send("order_placed", direction=signal.direction, symbol=symbol,
-               qty=qty, price=actual_price, order_id=order_id)
+               qty=actual_qty, price=actual_price, order_id=order_id)
     alert.send("order_filled", symbol=symbol, actual_price=actual_price, slippage=slippage)
-    logger.info(f"Entry: {signal.direction} {qty}x{symbol} @ {actual_price} | SL={signal.stop_loss}")
+    logger.info(f"Entry: {signal.direction} {actual_qty}x{symbol} @ {actual_price} | SL={signal.stop_loss}")
 
 
 # ── EOD ───────────────────────────────────────────────────────────────────────
@@ -478,6 +551,7 @@ def run() -> int:
         ) or "  None"
         return (
             f"Bot Status{' — PAUSED' if pause_event.is_set() else ''}\n"
+            f"Market: {ctx['calendar'].status_text()}\n"
             f"Open positions ({len(open_pos)}):\n{pos_lines}\n"
             f"Daily P&L: Rs.{risk._daily_pnl:.2f}\n"
             f"Trades today: {risk._trades_today}"
@@ -498,6 +572,10 @@ def run() -> int:
     try:
         while not shutdown["requested"] and not stop_event.is_set():
             _maybe_heartbeat(ctx, hb)
+            if not ctx["calendar"].is_trading_day():
+                logger.info("Market holiday/weekend — idling")
+                time.sleep(300)
+                continue
             if not risk.is_market_open():
                 if positions.is_square_off_time():
                     eod_square_off(ctx)

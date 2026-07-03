@@ -11,7 +11,8 @@ echo.
 .venv\Scripts\python.exe auth.py
 if errorlevel 1 (
     echo.
-    echo Authentication failed. Press any key to exit.
+    echo Bot not started ^(auth failed or market closed — see message above^).
+    echo Press any key to exit.
     pause >nul
     exit /b 1
 )

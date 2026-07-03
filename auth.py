@@ -52,11 +52,30 @@ def set_password() -> None:
     print("You can now remove ZERODHA_PASSWORD from config/.env.")
 
 
+def _market_closed_today() -> bool:
+    """Weekend or NSE holiday (from config.yaml trading.holidays)."""
+    try:
+        from datetime import datetime
+        import yaml
+        with open(os.path.join("config", "config.yaml")) as f:
+            cfg = yaml.safe_load(f)
+        holidays = {str(h) for h in cfg["trading"].get("holidays", [])}
+        today = datetime.now().date()
+        return today.weekday() >= 5 or today.isoformat() in holidays
+    except Exception:
+        return False  # if the check itself fails, don't block authentication
+
+
 def run_auth() -> str:
     """
     Authenticate with Kite Connect. Returns the access token.
     Saves it to KITE_ACCESS_TOKEN_PATH. Exits on failure.
     """
+    if _market_closed_today() and "--force" not in sys.argv:
+        print("Market is closed today (weekend/holiday) — not starting.")
+        print("Use 'python auth.py --force' to authenticate anyway.")
+        sys.exit(1)
+
     api_key    = os.getenv("KITE_API_KEY")
     api_secret = os.getenv("KITE_API_SECRET")
     user_id    = os.getenv("ZERODHA_USER_ID")
