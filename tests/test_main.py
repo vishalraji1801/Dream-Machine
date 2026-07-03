@@ -77,15 +77,20 @@ def _make_ctx(
     alert = MagicMock()
     alert.send.return_value = True
 
+    streamer = MagicMock()
+    streamer.is_connected = False  # default: not connected → falls back to REST
+    streamer.get_latest_quotes.return_value = quotes
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
-        "fetcher": fetcher, "executor": executor,
+        "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions,
         "_mock_signal": mock_signal,
     }
 
 
-def _make_position(symbol="RELIANCE", direction="BUY", entry=2800.0, qty=10, sl=2772.0, target=2856.0):
+def _make_position(symbol="RELIANCE", direction="BUY", entry=2800.0, qty=10,
+                   sl=2772.0, target=2856.0, gtt_id=None):
     pos = MagicMock(spec=Position)
     pos.symbol = symbol
     pos.direction = direction
@@ -93,11 +98,27 @@ def _make_position(symbol="RELIANCE", direction="BUY", entry=2800.0, qty=10, sl=
     pos.quantity = qty
     pos.stop_loss = sl
     pos.target = target
+    pos.gtt_id = gtt_id
     pos.unrealized_pnl.return_value = 200.0
     return pos
 
 
 # ── startup ───────────────────────────────────────────────────────────────────
+
+def _patch_startup():
+    return [
+        patch("main.load_dotenv"),
+        patch("main.load_config", return_value=_make_ctx()["cfg"]),
+        patch("main.setup_logging"),
+        patch("main.load_kite_session", return_value=MagicMock()),
+        patch("main.AlertManager", return_value=MagicMock()),
+        patch("main.DataStreamer", return_value=MagicMock()),
+        patch("main.OrderExecutor", return_value=MagicMock()),
+        patch("main.RiskManager", return_value=MagicMock()),
+        patch("main.PositionManager", return_value=MagicMock()),
+        patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}),
+    ]
+
 
 def test_startup_returns_all_keys():
     with patch("main.load_dotenv"), \
@@ -106,6 +127,7 @@ def test_startup_returns_all_keys():
          patch("main.load_kite_session", return_value=MagicMock()), \
          patch("main.AlertManager", return_value=MagicMock()), \
          patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
          patch("main.OrderExecutor", return_value=MagicMock()), \
          patch("main.RiskManager", return_value=MagicMock()), \
          patch("main.PositionManager", return_value=MagicMock()), \
@@ -115,8 +137,29 @@ def test_startup_returns_all_keys():
         MockFetcher.return_value = mock_fetcher
         ctx = main.startup()
 
-    for key in ("cfg", "kite", "alert", "fetcher", "executor", "risk", "positions"):
+    for key in ("cfg", "kite", "alert", "fetcher", "streamer", "executor", "risk", "positions"):
         assert key in ctx
+
+
+def test_startup_connects_streamer():
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=_make_ctx()["cfg"]), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()), \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer") as MockStreamer, \
+         patch("main.OrderExecutor", return_value=MagicMock()), \
+         patch("main.RiskManager", return_value=MagicMock()), \
+         patch("main.PositionManager", return_value=MagicMock()), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        mock_streamer = MagicMock()
+        MockStreamer.return_value = mock_streamer
+        main.startup()
+    mock_streamer.connect.assert_called_once()
 
 
 def test_startup_raises_if_instruments_fail():
@@ -126,6 +169,7 @@ def test_startup_raises_if_instruments_fail():
          patch("main.load_kite_session", return_value=MagicMock()), \
          patch("main.AlertManager", return_value=MagicMock()), \
          patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
          patch("main.OrderExecutor", return_value=MagicMock()), \
          patch("main.RiskManager", return_value=MagicMock()), \
          patch("main.PositionManager", return_value=MagicMock()), \
@@ -329,3 +373,105 @@ def test_run_calls_eod_square_off_at_square_off_time():
         main.run()
 
     assert mock_eod.call_count >= 1
+
+
+def test_run_disconnects_streamer_on_shutdown():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = False
+
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        main.run()
+
+    ctx["streamer"].disconnect.assert_called_once()
+
+
+# ── KiteTicker / streamer integration ────────────────────────────────────────
+
+def test_manage_uses_streamer_quotes_when_connected():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2870.0}})
+    ctx["streamer"].is_connected = True
+    ctx["streamer"].get_latest_quotes.return_value = {"RELIANCE": {"ltp": 2870.0}}
+    ctx["positions"].check_exit.return_value = (False, "")
+    main._manage_open_positions(ctx)
+    ctx["streamer"].get_latest_quotes.assert_called_once_with(["RELIANCE"])
+    ctx["fetcher"].get_quotes.assert_not_called()
+
+
+def test_manage_falls_back_to_rest_when_streamer_disconnected():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2870.0}})
+    ctx["streamer"].is_connected = False
+    ctx["positions"].check_exit.return_value = (False, "")
+    main._manage_open_positions(ctx)
+    ctx["fetcher"].get_quotes.assert_called_once()
+
+
+def test_manage_falls_back_to_rest_when_streamer_has_no_ticks():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2870.0}})
+    ctx["streamer"].is_connected = True
+    ctx["streamer"].get_latest_quotes.return_value = None  # no ticks buffered yet
+    ctx["positions"].check_exit.return_value = (False, "")
+    main._manage_open_positions(ctx)
+    ctx["fetcher"].get_quotes.assert_called_once()
+
+
+# ── GTT OCO integration ───────────────────────────────────────────────────────
+
+def test_execute_entry_places_gtt_oco_after_fill():
+    ctx = _make_ctx()
+    ctx["executor"].place_gtt_oco.return_value = 777
+    mock_signal = MagicMock()
+    mock_signal.direction = "BUY"
+    mock_signal.entry_price = 2850.0
+    mock_signal.stop_loss = 2821.5
+    mock_signal.target = 2907.0
+    main._execute_entry(ctx, "RELIANCE", mock_signal, 10)
+    ctx["executor"].place_gtt_oco.assert_called_once_with(
+        "RELIANCE", "BUY", 10, 2821.5, 2907.0, 2852.0
+    )
+    ctx["positions"].set_gtt_id.assert_called_once_with("RELIANCE", 777)
+
+
+def test_execute_exit_cancels_gtt_before_order():
+    pos = _make_position(gtt_id=999)
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2770.0, "sl_hit")
+    ctx["executor"].cancel_gtt.assert_called_once_with(999)
+    ctx["executor"].place_order.assert_called_once()
+
+
+def test_execute_exit_no_gtt_cancel_when_no_gtt_id():
+    pos = _make_position(gtt_id=None)
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2770.0, "sl_hit")
+    ctx["executor"].cancel_gtt.assert_not_called()
+
+
+def test_eod_square_off_cancels_gtt_before_market_order():
+    pos = _make_position("RELIANCE", "BUY", gtt_id=555)
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2850.0}})
+    main.eod_square_off(ctx)
+    ctx["executor"].cancel_gtt.assert_called_once_with(555)
+    ctx["executor"].place_order.assert_called_once()
+
+
+def test_manage_refreshes_gtt_when_trailing_sl_updates():
+    pos = _make_position(gtt_id=100)
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2870.0}})
+    ctx["streamer"].is_connected = False
+    ctx["positions"].update_trailing_sl.return_value = 2814.0  # new SL
+    ctx["positions"].check_exit.return_value = (False, "")
+    ctx["executor"].place_gtt_oco.return_value = 101
+    main._manage_open_positions(ctx)
+    ctx["executor"].cancel_gtt.assert_called_once_with(100)
+    ctx["executor"].place_gtt_oco.assert_called_once()
+    ctx["positions"].set_gtt_id.assert_called_once_with("RELIANCE", 101)

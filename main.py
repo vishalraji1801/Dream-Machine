@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from src.alert_manager import AlertManager
 from src.auth import load_kite_session
 from src.data_fetcher import DataFetcher
+from src.data_streamer import DataStreamer
 from src.logger import get_logger, setup_logging
 from src.order_executor import OrderExecutor
 from src.position_manager import PositionManager
@@ -54,11 +55,15 @@ def startup() -> dict:
     if not fetcher.load_instruments(symbols):
         raise RuntimeError("Instrument load failed — cannot start without token map")
 
+    streamer = DataStreamer(kite.api_key, kite.access_token, fetcher._instruments)
+    streamer.connect()
+
     ctx = {
         "cfg": cfg,
         "kite": kite,
         "alert": alert,
         "fetcher": fetcher,
+        "streamer": streamer,
         "executor": OrderExecutor(kite, cfg),
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
@@ -84,13 +89,12 @@ def trading_cycle(ctx: dict) -> None:
 def _manage_open_positions(ctx: dict) -> None:
     """Update trailing SL and exit positions that hit SL or target."""
     positions = ctx["positions"]
-    fetcher = ctx["fetcher"]
     open_pos = positions.get_open_positions()
     if not open_pos:
         return
 
     symbols = [p.symbol for p in open_pos]
-    quotes = fetcher.get_quotes(symbols)
+    quotes = _get_quotes(ctx, symbols)
     if quotes is None:
         logger.warning("Skipping position management — quote fetch failed")
         return
@@ -99,7 +103,15 @@ def _manage_open_positions(ctx: dict) -> None:
         ltp = quotes.get(pos.symbol, {}).get("ltp")
         if ltp is None:
             continue
-        positions.update_trailing_sl(pos.symbol, ltp)
+        new_sl = positions.update_trailing_sl(pos.symbol, ltp)
+        if new_sl is not None and pos.gtt_id is not None:
+            # Refresh GTT OCO with updated trailing SL
+            ctx["executor"].cancel_gtt(pos.gtt_id)
+            new_gtt = ctx["executor"].place_gtt_oco(
+                pos.symbol, pos.direction, pos.quantity, new_sl, pos.target, ltp
+            )
+            if new_gtt:
+                positions.set_gtt_id(pos.symbol, new_gtt)
         exiting, reason = positions.check_exit(pos.symbol, ltp)
         if exiting:
             _execute_exit(ctx, pos, ltp, reason)
@@ -118,7 +130,7 @@ def _scan_entries(ctx: dict) -> None:
     if not candidates:
         return
 
-    quotes = fetcher.get_quotes(candidates)
+    quotes = _get_quotes(ctx, candidates)
     if quotes is None:
         logger.warning("Skipping entry scan — quote fetch failed")
         return
@@ -146,6 +158,17 @@ def _scan_entries(ctx: dict) -> None:
         break  # one entry per cycle to stay within position limits
 
 
+def _get_quotes(ctx: dict, symbols: list) -> dict | None:
+    """Return quotes from KiteTicker if connected, else fall back to REST."""
+    streamer = ctx.get("streamer")
+    if streamer and streamer.is_connected:
+        quotes = streamer.get_latest_quotes(symbols)
+        if quotes:
+            return quotes
+        logger.info("Streamer connected but no ticks yet — falling back to REST")
+    return ctx["fetcher"].get_quotes(symbols)
+
+
 def _get_margin(ctx: dict) -> float:
     """Fetch available equity margin from Kite. Returns 0.0 on error."""
     try:
@@ -164,6 +187,9 @@ def _execute_exit(ctx: dict, pos, ltp: float, reason: str) -> None:
     positions = ctx["positions"]
     risk = ctx["risk"]
     alert = ctx["alert"]
+
+    if pos.gtt_id is not None:
+        executor.cancel_gtt(pos.gtt_id)
 
     exit_dir = "SELL" if pos.direction == "BUY" else "BUY"
     order_id = executor.place_order(pos.symbol, exit_dir, pos.quantity, ltp, "MARKET")
@@ -221,6 +247,11 @@ def _execute_entry(ctx: dict, symbol: str, signal, qty: int) -> None:
     risk.record_trade()
     risk.clear_api_errors()
 
+    gtt_id = executor.place_gtt_oco(symbol, signal.direction, qty,
+                                     signal.stop_loss, signal.target, actual_price)
+    if gtt_id:
+        positions.set_gtt_id(symbol, gtt_id)
+
     alert.send("order_placed", direction=signal.direction, symbol=symbol,
                qty=qty, price=actual_price, order_id=order_id)
     alert.send("order_filled", symbol=symbol, actual_price=actual_price, slippage=slippage)
@@ -241,9 +272,11 @@ def eod_square_off(ctx: dict) -> None:
         return
 
     symbols = [p.symbol for p in to_close]
-    quotes = fetcher.get_quotes(symbols) or {}
+    quotes = _get_quotes(ctx, symbols) or {}
 
     for pos in to_close:
+        if pos.gtt_id is not None:
+            executor.cancel_gtt(pos.gtt_id)
         ltp = quotes.get(pos.symbol, {}).get("ltp", pos.entry_price)
         exit_dir = "SELL" if pos.direction == "BUY" else "BUY"
         order_id = executor.place_order(pos.symbol, exit_dir, pos.quantity, ltp, "MARKET")
@@ -307,6 +340,8 @@ def run() -> None:
     finally:
         eod_square_off(ctx)
         _send_daily_summary(ctx)
+        if "streamer" in ctx:
+            ctx["streamer"].disconnect()
         logger.info("Bot shutdown complete")
 
 
