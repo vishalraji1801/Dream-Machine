@@ -15,6 +15,7 @@ from src.data_fetcher import DataFetcher
 from src.data_streamer import DataStreamer
 from src.logger import get_logger, setup_logging
 from src.order_executor import OrderExecutor
+from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
 from src.strategy import generate_signal
@@ -58,13 +59,19 @@ def startup() -> dict:
     streamer = DataStreamer(kite.api_key, kite.access_token, fetcher._instruments)
     streamer.connect()
 
+    paper_mode = cfg.get("paper_trading", {}).get("enabled", False)
+    executor = PaperTrader(fetcher, cfg) if paper_mode else OrderExecutor(kite, cfg)
+    if paper_mode:
+        logger.warning("PAPER TRADING MODE — no real orders will be placed")
+        alert.send_raw("PAPER TRADING MODE ACTIVE — simulating fills, no real orders.")
+
     ctx = {
         "cfg": cfg,
         "kite": kite,
         "alert": alert,
         "fetcher": fetcher,
         "streamer": streamer,
-        "executor": OrderExecutor(kite, cfg),
+        "executor": executor,
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
     }
