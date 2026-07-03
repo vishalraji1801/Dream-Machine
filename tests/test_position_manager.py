@@ -156,3 +156,22 @@ def test_unrealized_pnl_buy_profit():
 def test_unrealized_pnl_sell_profit():
     pos = Position("X", "SELL", 1000.0, 10, 1010.0, 980.0)
     assert pos.unrealized_pnl(990.0) == pytest.approx(100.0)
+
+
+# ── GTT ID ───────────────────────────────────────────────────────────────────
+
+def test_position_gtt_id_default_none(pm):
+    pm.add_position("X", "BUY", 100.0, 1, 99.0, 102.0)
+    pos = pm.get_open_positions()[0]
+    assert pos.gtt_id is None
+
+
+def test_set_gtt_id_stores_value(pm):
+    pm.add_position("X", "BUY", 100.0, 1, 99.0, 102.0)
+    pm.set_gtt_id("X", 12345)
+    pos = pm.get_open_positions()[0]
+    assert pos.gtt_id == 12345
+
+
+def test_set_gtt_id_noop_for_unknown_symbol(pm):
+    pm.set_gtt_id("UNKNOWN", 99)  # should not raise

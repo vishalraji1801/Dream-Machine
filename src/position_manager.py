@@ -4,6 +4,7 @@ Tracks open positions, monitors stop-loss and target levels, and handles EOD squ
 """
 from dataclasses import dataclass, field
 from datetime import datetime, time
+from typing import Optional
 
 from src.logger import get_logger
 
@@ -20,6 +21,7 @@ class Position:
     target: float
     entry_time: datetime = field(default_factory=datetime.now)
     trailing_sl_active: bool = False
+    gtt_id: Optional[int] = None  # Kite GTT trigger ID (set after entry fills)
 
     def unrealized_pnl(self, current_price: float) -> float:
         if self.direction == "BUY":
@@ -53,6 +55,13 @@ class PositionManager:
 
     def open_count(self) -> int:
         return len(self._positions)
+
+    def set_gtt_id(self, symbol: str, gtt_id: int) -> None:
+        """Store the Kite GTT trigger ID on the open position."""
+        pos = self._positions.get(symbol)
+        if pos:
+            pos.gtt_id = gtt_id
+            logger.info(f"{symbol}: GTT OCO registered, gtt_id={gtt_id}")
 
     # ── Exit checks ───────────────────────────────────────────────────────────
 

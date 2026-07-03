@@ -108,6 +108,63 @@ class OrderExecutor:
             logger.error(f"cancel_order unexpected error ({order_id}): {exc}")
             return False
 
+    # ── GTT OCO ───────────────────────────────────────────────────────────────
+
+    def place_gtt_oco(
+        self,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        stop_loss: float,
+        target: float,
+        last_price: float,
+    ) -> Optional[int]:
+        """
+        Place a GTT OCO (two-leg) order as a safety net for SL + target exits.
+        If the bot crashes, Kite's servers will still close the position.
+        direction: direction of the ENTRY ("BUY" or "SELL") — exit is the opposite.
+        Returns gtt_id (int) on success, None on failure.
+        """
+        exit_txn = "SELL" if direction == "BUY" else "BUY"
+        # BUY position: lower trigger = SL, upper trigger = target
+        # SELL position: lower trigger = target, upper trigger = SL
+        if direction == "BUY":
+            trigger_values = [stop_loss, target]
+        else:
+            trigger_values = [target, stop_loss]
+
+        orders = [
+            {"transaction_type": exit_txn, "quantity": quantity,
+             "order_type": "LIMIT", "product": self._product, "price": trigger_values[0]},
+            {"transaction_type": exit_txn, "quantity": quantity,
+             "order_type": "LIMIT", "product": self._product, "price": trigger_values[1]},
+        ]
+        try:
+            result = self._kite.place_gtt(
+                trigger_type="two-leg",
+                tradingsymbol=symbol,
+                exchange=self._exchange,
+                trigger_values=trigger_values,
+                last_price=last_price,
+                orders=orders,
+            )
+            gtt_id = result.get("trigger_id")
+            logger.info(f"GTT OCO placed: {symbol} | SL={stop_loss} target={target} | gtt_id={gtt_id}")
+            return gtt_id
+        except Exception as exc:
+            logger.error(f"place_gtt_oco failed ({symbol}): {exc}")
+            return None
+
+    def cancel_gtt(self, gtt_id: int) -> bool:
+        """Cancel a Kite GTT order. Returns True on success."""
+        try:
+            self._kite.cancel_gtt(gtt_id)
+            logger.info(f"GTT cancelled: gtt_id={gtt_id}")
+            return True
+        except Exception as exc:
+            logger.error(f"cancel_gtt failed (gtt_id={gtt_id}): {exc}")
+            return False
+
     # ── Status query ──────────────────────────────────────────────────────────
 
     def get_order_status(self, order_id: str) -> Optional[dict]:

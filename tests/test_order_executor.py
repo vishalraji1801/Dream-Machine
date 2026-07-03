@@ -204,3 +204,69 @@ def test_cancel_order_returns_false_on_input_exception(executor, mock_kite):
 def test_cancel_order_returns_false_on_unexpected_error(executor, mock_kite):
     mock_kite.cancel_order.side_effect = Exception("Network error")
     assert executor.cancel_order("123") is False
+
+
+# ── place_gtt_oco ─────────────────────────────────────────────────────────────
+
+def test_place_gtt_oco_buy_returns_trigger_id(executor, mock_kite):
+    mock_kite.place_gtt.return_value = {"trigger_id": 99}
+    gtt_id = executor.place_gtt_oco("RELIANCE", "BUY", 10, 2772.0, 2856.0, 2814.0)
+    assert gtt_id == 99
+
+
+def test_place_gtt_oco_buy_uses_two_leg_trigger_type(executor, mock_kite):
+    mock_kite.place_gtt.return_value = {"trigger_id": 1}
+    executor.place_gtt_oco("RELIANCE", "BUY", 10, 2772.0, 2856.0, 2814.0)
+    _, kwargs = mock_kite.place_gtt.call_args
+    assert kwargs["trigger_type"] == "two-leg"
+
+
+def test_place_gtt_oco_buy_trigger_values_sl_then_target(executor, mock_kite):
+    mock_kite.place_gtt.return_value = {"trigger_id": 1}
+    executor.place_gtt_oco("RELIANCE", "BUY", 10, 2772.0, 2856.0, 2814.0)
+    _, kwargs = mock_kite.place_gtt.call_args
+    assert kwargs["trigger_values"] == [2772.0, 2856.0]
+
+
+def test_place_gtt_oco_sell_trigger_values_target_then_sl(executor, mock_kite):
+    mock_kite.place_gtt.return_value = {"trigger_id": 2}
+    executor.place_gtt_oco("RELIANCE", "SELL", 10, 2856.0, 2772.0, 2814.0)
+    _, kwargs = mock_kite.place_gtt.call_args
+    assert kwargs["trigger_values"] == [2772.0, 2856.0]
+
+
+def test_place_gtt_oco_exit_is_sell_for_buy(executor, mock_kite):
+    mock_kite.place_gtt.return_value = {"trigger_id": 3}
+    executor.place_gtt_oco("RELIANCE", "BUY", 10, 2772.0, 2856.0, 2814.0)
+    _, kwargs = mock_kite.place_gtt.call_args
+    assert all(o["transaction_type"] == "SELL" for o in kwargs["orders"])
+
+
+def test_place_gtt_oco_exit_is_buy_for_sell(executor, mock_kite):
+    mock_kite.place_gtt.return_value = {"trigger_id": 4}
+    executor.place_gtt_oco("RELIANCE", "SELL", 10, 2856.0, 2772.0, 2814.0)
+    _, kwargs = mock_kite.place_gtt.call_args
+    assert all(o["transaction_type"] == "BUY" for o in kwargs["orders"])
+
+
+def test_place_gtt_oco_returns_none_on_error(executor, mock_kite):
+    mock_kite.place_gtt.side_effect = Exception("API error")
+    assert executor.place_gtt_oco("RELIANCE", "BUY", 10, 2772.0, 2856.0, 2814.0) is None
+
+
+# ── cancel_gtt ────────────────────────────────────────────────────────────────
+
+def test_cancel_gtt_returns_true_on_success(executor, mock_kite):
+    mock_kite.cancel_gtt.return_value = {}
+    assert executor.cancel_gtt(99) is True
+
+
+def test_cancel_gtt_calls_kite_with_gtt_id(executor, mock_kite):
+    mock_kite.cancel_gtt.return_value = {}
+    executor.cancel_gtt(42)
+    mock_kite.cancel_gtt.assert_called_once_with(42)
+
+
+def test_cancel_gtt_returns_false_on_error(executor, mock_kite):
+    mock_kite.cancel_gtt.side_effect = Exception("not found")
+    assert executor.cancel_gtt(99) is False
