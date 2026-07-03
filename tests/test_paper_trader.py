@@ -122,6 +122,82 @@ def test_cancel_unknown_order_returns_true(pt):
     assert pt.cancel_order("PAPER-000000") is True
 
 
+# ── Realistic fills ───────────────────────────────────────────────────────────
+
+@pytest.fixture
+def realistic_pt(fetcher):
+    cfg = {
+        "trading": {"exchange": "NSE"},
+        "paper_trading": {"enabled": True, "simulated_slippage_pct": 0.05,
+                          "realistic_fills": True},
+    }
+    return PaperTrader(fetcher, cfg)
+
+
+def test_realistic_buy_limit_fills_when_ltp_at_or_below_limit(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"RELIANCE": {"ltp": 2848.0}}
+    oid = realistic_pt.place_order("RELIANCE", "BUY", 10, 2850.0, "LIMIT")
+    assert realistic_pt.monitor_order(oid)["status"] == "COMPLETE"
+
+
+def test_realistic_buy_limit_stays_open_when_ltp_above_limit(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"RELIANCE": {"ltp": 2855.0}}
+    oid = realistic_pt.place_order("RELIANCE", "BUY", 10, 2850.0, "LIMIT")
+    result = realistic_pt.monitor_order(oid)
+    assert result["status"] == "OPEN"
+    assert result["filled_quantity"] == 0
+    assert result["pending_quantity"] == 10
+
+
+def test_realistic_sell_limit_fills_when_ltp_at_or_above_limit(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"TCS": {"ltp": 3505.0}}
+    oid = realistic_pt.place_order("TCS", "SELL", 5, 3500.0, "LIMIT")
+    assert realistic_pt.monitor_order(oid)["status"] == "COMPLETE"
+
+
+def test_realistic_sell_limit_stays_open_when_ltp_below_limit(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"TCS": {"ltp": 3490.0}}
+    oid = realistic_pt.place_order("TCS", "SELL", 5, 3500.0, "LIMIT")
+    assert realistic_pt.monitor_order(oid)["status"] == "OPEN"
+
+
+def test_realistic_market_order_always_fills(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"RELIANCE": {"ltp": 2855.0}}
+    oid = realistic_pt.place_order("RELIANCE", "BUY", 10, 2850.0, "MARKET")
+    result = realistic_pt.monitor_order(oid)
+    assert result["status"] == "COMPLETE"
+    assert result["average_price"] == round(2855.0 * 1.0005, 2)
+
+
+def test_realistic_limit_fills_when_no_quote_available(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = None
+    oid = realistic_pt.place_order("RELIANCE", "BUY", 10, 2850.0, "LIMIT")
+    assert realistic_pt.monitor_order(oid)["status"] == "COMPLETE"
+
+
+def test_cancel_open_order_marks_cancelled(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"RELIANCE": {"ltp": 2855.0}}
+    oid = realistic_pt.place_order("RELIANCE", "BUY", 10, 2850.0, "LIMIT")
+    assert realistic_pt.cancel_order(oid) is True
+    result = realistic_pt.get_order_status(oid)
+    assert result["status"] == "CANCELLED"
+    assert result["pending_quantity"] == 0
+
+
+def test_cancel_complete_order_does_not_change_status(realistic_pt, fetcher):
+    fetcher.get_quotes.return_value = {"RELIANCE": {"ltp": 2848.0}}
+    oid = realistic_pt.place_order("RELIANCE", "BUY", 10, 2850.0, "LIMIT")
+    realistic_pt.cancel_order(oid)
+    assert realistic_pt.get_order_status(oid)["status"] == "COMPLETE"
+
+
+def test_default_mode_fills_even_when_ltp_above_limit(pt, fetcher):
+    # realistic_fills defaults to False — old optimistic behavior preserved
+    fetcher.get_quotes.return_value = {"RELIANCE": {"ltp": 2855.0}}
+    oid = pt.place_order("RELIANCE", "BUY", 10, 2850.0, "LIMIT")
+    assert pt.monitor_order(oid)["status"] == "COMPLETE"
+
+
 # ── GTT OCO ───────────────────────────────────────────────────────────────────
 
 def test_place_gtt_oco_returns_integer_id(pt):

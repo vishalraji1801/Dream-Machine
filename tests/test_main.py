@@ -81,10 +81,13 @@ def _make_ctx(
     streamer.is_connected = False  # default: not connected → falls back to REST
     streamer.get_latest_quotes.return_value = quotes
 
+    ledger = MagicMock()
+    ledger.format_summary.return_value = None
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
-        "risk": risk, "positions": positions,
+        "risk": risk, "positions": positions, "ledger": ledger,
         "_mock_signal": mock_signal,
     }
 
@@ -99,6 +102,7 @@ def _make_position(symbol="RELIANCE", direction="BUY", entry=2800.0, qty=10,
     pos.stop_loss = sl
     pos.target = target
     pos.gtt_id = gtt_id
+    pos.entry_time = datetime(2026, 7, 3, 10, 15)
     pos.unrealized_pnl.return_value = 200.0
     return pos
 
@@ -611,3 +615,40 @@ def test_manage_refreshes_gtt_when_trailing_sl_updates():
     ctx["executor"].cancel_gtt.assert_called_once_with(100)
     ctx["executor"].place_gtt_oco.assert_called_once()
     ctx["positions"].set_gtt_id.assert_called_once_with("RELIANCE", 101)
+
+
+# ── Trade ledger integration ──────────────────────────────────────────────────
+
+def test_execute_exit_records_trade_in_ledger():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2856.0, "target_hit")
+    ctx["ledger"].record.assert_called_once()
+    kwargs = ctx["ledger"].record.call_args.kwargs
+    assert kwargs["symbol"] == "RELIANCE"
+    assert kwargs["exit_reason"] == "target_hit"
+
+
+def test_eod_square_off_records_trade_in_ledger():
+    pos = _make_position("TCS", "SELL", entry=3500.0, qty=5)
+    ctx = _make_ctx(open_positions=[pos], quotes={"TCS": {"ltp": 3480.0}})
+    main.eod_square_off(ctx)
+    ctx["ledger"].record.assert_called_once()
+    assert ctx["ledger"].record.call_args.kwargs["exit_reason"] == "eod_square_off"
+
+
+def test_daily_summary_sends_trade_breakdown_when_trades_exist():
+    ctx = _make_ctx()
+    ctx["ledger"].format_summary.return_value = "Today's trades:\nBUY 10xRELIANCE | +560.00"
+    main._send_daily_summary(ctx)
+    ctx["alert"].send_raw.assert_called_once_with(
+        "Today's trades:\nBUY 10xRELIANCE | +560.00"
+    )
+
+
+def test_daily_summary_skips_breakdown_when_no_trades():
+    ctx = _make_ctx()
+    ctx["ledger"].format_summary.return_value = None
+    main._send_daily_summary(ctx)
+    ctx["alert"].send_raw.assert_not_called()

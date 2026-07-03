@@ -6,6 +6,7 @@ import os
 import signal
 import threading
 import time
+from datetime import datetime
 
 import yaml
 from dotenv import load_dotenv
@@ -21,6 +22,7 @@ from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
 from src.strategy import generate_signal
 from src.telegram_controller import TelegramController
+from src.trade_ledger import TradeLedger
 
 logger = get_logger("main")
 
@@ -76,6 +78,7 @@ def startup() -> dict:
         "executor": executor,
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
+        "ledger": TradeLedger(),
     }
     logger.info("All modules initialised — bot ready")
     return ctx
@@ -219,6 +222,13 @@ def _execute_exit(ctx: dict, pos, ltp: float, reason: str) -> None:
     risk.record_trade()
     risk.clear_api_errors()
 
+    ctx["ledger"].record(
+        symbol=removed.symbol, direction=removed.direction, quantity=removed.quantity,
+        entry_price=removed.entry_price, exit_price=exit_price,
+        entry_time=removed.entry_time, exit_time=datetime.now(),
+        pnl=pnl, exit_reason=reason,
+    )
+
     if reason == "sl_hit":
         alert.send("sl_hit", symbol=pos.symbol, entry=pos.entry_price,
                    exit_price=exit_price, loss=abs(min(pnl, 0)))
@@ -299,6 +309,12 @@ def eod_square_off(ctx: dict) -> None:
         pnl = pos.unrealized_pnl(exit_price)
         risk.record_pnl(pnl)
         positions.remove_position(pos.symbol)
+        ctx["ledger"].record(
+            symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,
+            entry_price=pos.entry_price, exit_price=exit_price,
+            entry_time=pos.entry_time, exit_time=datetime.now(),
+            pnl=pnl, exit_reason="eod_square_off",
+        )
         logger.info(f"EOD square-off: {pos.symbol} @ {exit_price} | P&L={pnl:.2f}")
 
     logger.info("All positions squared off")
@@ -313,6 +329,9 @@ def _send_daily_summary(ctx: dict) -> None:
         loss=abs(min(risk._daily_pnl, 0)),
         net_pnl=risk._daily_pnl,
     )
+    breakdown = ctx["ledger"].format_summary()
+    if breakdown:
+        ctx["alert"].send_raw(breakdown)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
