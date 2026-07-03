@@ -19,6 +19,7 @@ from typing import Optional
 
 import pandas as pd
 
+from src.costs import estimate_intraday_costs, trade_leg_values
 from src.logger import get_logger
 from src.strategy import generate_signal
 
@@ -34,8 +35,9 @@ class BacktestTrade:
     exit_price: float
     entry_time: pd.Timestamp
     exit_time: pd.Timestamp
-    pnl: float
+    pnl: float              # net of estimated transaction costs
     exit_reason: str
+    costs: float = 0.0      # estimated charges for the round trip
 
 
 @dataclass
@@ -265,16 +267,20 @@ class Backtester:
             return df.iloc[index[ts]]["close"]
         return fallback
 
-    @staticmethod
-    def _close(trades, open_pos, pos, exit_price, ts, reason) -> float:
+    def _close(self, trades, open_pos, pos, exit_price, ts, reason) -> float:
         if pos.direction == "BUY":
-            pnl = round((exit_price - pos.entry_price) * pos.quantity, 2)
+            gross = (exit_price - pos.entry_price) * pos.quantity
         else:
-            pnl = round((pos.entry_price - exit_price) * pos.quantity, 2)
+            gross = (pos.entry_price - exit_price) * pos.quantity
+        buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
+                                         exit_price, pos.quantity)
+        costs = estimate_intraday_costs(buy_v, sell_v, self._cfg)
+        pnl = round(gross - costs, 2)
         trades.append(BacktestTrade(
             symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,
             entry_price=pos.entry_price, exit_price=exit_price,
             entry_time=pos.entry_time, exit_time=ts, pnl=pnl, exit_reason=reason,
+            costs=costs,
         ))
         del open_pos[pos.symbol]
         return pnl
@@ -296,6 +302,7 @@ def format_report(result: BacktestResult) -> str:
         f" Avg win        : Rs.{result.avg_win}",
         f" Avg loss       : Rs.{result.avg_loss}",
         f" Max drawdown   : Rs.{result.max_drawdown}",
+        f" Est. costs     : Rs.{round(sum(t.costs for t in result.trades), 2)}",
         "=" * 62,
     ]
     if result.trades:

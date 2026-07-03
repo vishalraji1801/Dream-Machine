@@ -19,6 +19,7 @@ def cfg():
                  "order_value_cap": 120000, "max_daily_loss": 10000,
                  "max_trades_per_day": 8, "trailing_sl_enabled": False,
                  "trailing_sl_activation_pct": 1.0, "trailing_sl_step_pct": 0.5},
+        "costs": {"enabled": False},  # keep P&L assertions exact; costs tested separately
     }
 
 
@@ -290,6 +291,20 @@ def test_window_limits_dataframe_passed_to_strategy(cfg):
     with patch("src.backtester.generate_signal", side_effect=spy):
         Backtester(cfg, window=10).run(candles)
     assert max(seen_lengths) == 10
+
+
+def test_costs_subtracted_from_trade_pnl(cfg):
+    cfg["costs"] = {"enabled": True}
+    candles = {"X": _candles([
+        (100, 100.5, 99.5, 100, 1000),
+        (100, 103.0, 100.0, 102.5, 1000),  # target 102 hit
+    ])}
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
+        result = Backtester(cfg).run(candles)
+    t = result.trades[0]
+    assert t.costs > 0
+    # gross = (102-100) * 1000 = 2000; net must be lower by exactly the costs
+    assert t.pnl == pytest.approx(2000 - t.costs, abs=0.02)
 
 
 def test_format_report_contains_key_metrics():

@@ -37,6 +37,7 @@ def _make_ctx(
                  "max_consecutive_api_errors": 3, "min_margin_threshold": 25000},
         "scheduler": {"cycle_interval_seconds": 300},
         "logging": {"level": "INFO", "retention_days": 30},
+        "costs": {"enabled": False},  # cost subtraction tested explicitly
     }
 
     mock_signal = MagicMock()
@@ -656,6 +657,82 @@ def test_daily_summary_skips_breakdown_when_no_trades():
     ctx["ledger"].format_summary.return_value = None
     main._send_daily_summary(ctx)
     ctx["alert"].send_raw.assert_not_called()
+
+
+# ── Transaction costs (SCRUM-65) ──────────────────────────────────────────────
+
+def test_execute_exit_subtracts_costs_when_enabled():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 500.0
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["cfg"]["costs"] = {"enabled": True}
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2850.0, "target_hit")
+    recorded = ctx["risk"].record_pnl.call_args.args[0]
+    assert recorded < 500.0          # costs subtracted
+    assert recorded > 450.0          # but only by a realistic amount
+
+
+def test_execute_exit_gross_pnl_when_costs_disabled():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 500.0
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2850.0, "target_hit")
+    assert ctx["risk"].record_pnl.call_args.args[0] == 500.0
+
+
+def test_eod_square_off_subtracts_costs_when_enabled():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 500.0
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2850.0}})
+    ctx["cfg"]["costs"] = {"enabled": True}
+    main.eod_square_off(ctx)
+    recorded = ctx["risk"].record_pnl.call_args.args[0]
+    assert 450.0 < recorded < 500.0
+
+
+# ── Liquidity guard (SCRUM-66) ────────────────────────────────────────────────
+
+def test_spread_ok_when_tight():
+    cfg = {"risk": {"max_spread_pct": 0.15}}
+    quote = {"ltp": 1000.0, "bid": 999.5, "ask": 1000.5}  # 0.1% spread
+    assert main._spread_ok("X", quote, cfg) is True
+
+
+def test_spread_blocked_when_wide():
+    cfg = {"risk": {"max_spread_pct": 0.15}}
+    quote = {"ltp": 1000.0, "bid": 998.0, "ask": 1002.0}  # 0.4% spread
+    assert main._spread_ok("X", quote, cfg) is False
+
+
+def test_spread_ok_when_no_depth_data():
+    cfg = {"risk": {"max_spread_pct": 0.15}}
+    quote = {"ltp": 1000.0}  # streamer quote — no bid/ask
+    assert main._spread_ok("X", quote, cfg) is True
+
+
+def test_spread_ok_when_not_configured():
+    cfg = {"risk": {}}
+    quote = {"ltp": 1000.0, "bid": 990.0, "ask": 1010.0}
+    assert main._spread_ok("X", quote, cfg) is True
+
+
+def test_scan_skips_symbol_with_wide_spread():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0, "bid": 2840.0, "ask": 2860.0},  # ~0.7%
+                "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["cfg"]["risk"]["max_spread_pct"] = 0.15
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main.generate_signal", return_value=ctx["_mock_signal"]) as mock_gen:
+        main._scan_entries(ctx)
+    called_symbols = [c.args[0] for c in mock_gen.call_args_list]
+    assert "RELIANCE" not in called_symbols  # blocked by spread guard
+    assert "TCS" in called_symbols           # no depth data — allowed
 
 
 # ── Crash recovery (state store) ──────────────────────────────────────────────

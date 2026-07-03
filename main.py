@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 
 from src.alert_manager import AlertManager
 from src.auth import load_kite_session
+from src.costs import estimate_intraday_costs, trade_leg_values
 from src.data_fetcher import DataFetcher
 from src.data_streamer import DataStreamer
 from src.logger import get_logger, setup_logging
@@ -165,6 +166,8 @@ def _scan_entries(ctx: dict) -> None:
     for symbol in candidates:
         if symbol not in quotes:
             continue
+        if not _spread_ok(symbol, quotes[symbol], cfg):
+            continue
         df = fetcher.get_candles(symbol)
         if df is None or df.empty:
             continue
@@ -183,6 +186,22 @@ def _scan_entries(ctx: dict) -> None:
             continue
         _execute_entry(ctx, symbol, signal, qty)
         break  # one entry per cycle to stay within position limits
+
+
+def _spread_ok(symbol: str, quote: dict, cfg: dict) -> bool:
+    """Liquidity guard: block entry when the bid-ask spread is too wide (SCRUM-66).
+    Quotes without depth data (e.g. from the WebSocket streamer) pass the check."""
+    max_spread = cfg["risk"].get("max_spread_pct")
+    if not max_spread:
+        return True
+    bid, ask, ltp = quote.get("bid"), quote.get("ask"), quote.get("ltp")
+    if not bid or not ask or not ltp:
+        return True
+    spread_pct = (ask - bid) / ltp * 100
+    if spread_pct > max_spread:
+        logger.info(f"{symbol}: spread {spread_pct:.3f}% > {max_spread}% — entry skipped")
+        return False
+    return True
 
 
 def _get_quotes(ctx: dict, symbols: list) -> dict | None:
@@ -230,7 +249,10 @@ def _execute_exit(ctx: dict, pos, ltp: float, reason: str) -> None:
     if removed is None:
         return
 
-    pnl = removed.unrealized_pnl(exit_price)
+    buy_v, sell_v = trade_leg_values(removed.direction, removed.entry_price,
+                                     exit_price, removed.quantity)
+    costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+    pnl = removed.unrealized_pnl(exit_price) - costs
     risk.record_pnl(pnl)
     risk.record_trade()
     risk.clear_api_errors()
@@ -319,7 +341,10 @@ def eod_square_off(ctx: dict) -> None:
             exit_price = result["average_price"] if result else ltp
         else:
             exit_price = ltp
-        pnl = pos.unrealized_pnl(exit_price)
+        buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
+                                         exit_price, pos.quantity)
+        costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+        pnl = pos.unrealized_pnl(exit_price) - costs
         risk.record_pnl(pnl)
         positions.remove_position(pos.symbol)
         ctx["ledger"].record(
