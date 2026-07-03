@@ -181,6 +181,50 @@ def test_startup_raises_if_instruments_fail():
             main.startup()
 
 
+def test_startup_uses_paper_trader_when_enabled():
+    paper_cfg = {**_make_ctx()["cfg"], "paper_trading": {"enabled": True, "simulated_slippage_pct": 0.05}}
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=paper_cfg), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()), \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
+         patch("main.PaperTrader") as MockPaper, \
+         patch("main.OrderExecutor") as MockLive, \
+         patch("main.RiskManager", return_value=MagicMock()), \
+         patch("main.PositionManager", return_value=MagicMock()), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        main.startup()
+    MockPaper.assert_called_once()
+    MockLive.assert_not_called()
+
+
+def test_startup_uses_order_executor_when_paper_disabled():
+    live_cfg = {**_make_ctx()["cfg"], "paper_trading": {"enabled": False}}
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=live_cfg), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()), \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
+         patch("main.PaperTrader") as MockPaper, \
+         patch("main.OrderExecutor") as MockLive, \
+         patch("main.RiskManager", return_value=MagicMock()), \
+         patch("main.PositionManager", return_value=MagicMock()), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        main.startup()
+    MockLive.assert_called_once()
+    MockPaper.assert_not_called()
+
+
 # ── trading_cycle ─────────────────────────────────────────────────────────────
 
 def test_cycle_skips_on_circuit_breaker():
