@@ -16,11 +16,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:run
 echo.
 echo Starting bot...
 echo.
 .venv\Scripts\python.exe main.py
+if errorlevel 1 (
+    echo.
+    echo Bot CRASHED — restarting in 15 seconds... ^(Ctrl+C to abort^)
+    timeout /t 15 /nobreak >nul
+    goto run
+)
 
 echo.
-echo Bot stopped. Press any key to close.
+echo Bot stopped cleanly. Press any key to close.
 pause >nul

@@ -50,6 +50,13 @@ class PositionManager:
             logger.info(f"Closed position: {symbol}")
         return pos
 
+    def restore(self, positions: list[Position]) -> None:
+        """Re-adopt positions from a saved state file (crash recovery)."""
+        for pos in positions:
+            self._positions[pos.symbol] = pos
+            logger.warning(f"Restored position: {pos.direction} {pos.symbol} "
+                           f"qty={pos.quantity} entry={pos.entry_price} sl={pos.stop_loss}")
+
     def get_open_positions(self) -> list[Position]:
         return list(self._positions.values())
 

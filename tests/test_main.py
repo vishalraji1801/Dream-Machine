@@ -84,10 +84,14 @@ def _make_ctx(
     ledger = MagicMock()
     ledger.format_summary.return_value = None
 
+    state = MagicMock()
+    state.load.return_value = None
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions, "ledger": ledger,
+        "state": state,
         "_mock_signal": mock_signal,
     }
 
@@ -652,3 +656,137 @@ def test_daily_summary_skips_breakdown_when_no_trades():
     ctx["ledger"].format_summary.return_value = None
     main._send_daily_summary(ctx)
     ctx["alert"].send_raw.assert_not_called()
+
+
+# ── Crash recovery (state store) ──────────────────────────────────────────────
+
+def test_save_state_passes_counters_and_positions():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["risk"]._daily_pnl = -1500.0
+    ctx["risk"]._trades_today = 3
+    main._save_state(ctx)
+    ctx["state"].save.assert_called_once_with(-1500.0, 3, [pos])
+
+
+def test_startup_restores_same_day_state():
+    saved = {"daily_pnl": -2000.0, "trades_today": 5, "positions": [_make_position()]}
+    mock_state = MagicMock()
+    mock_state.load.return_value = saved
+    mock_risk = MagicMock()
+    mock_positions = MagicMock()
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=_make_ctx()["cfg"]), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()) as MockAlert, \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
+         patch("main.OrderExecutor", return_value=MagicMock()), \
+         patch("main.RiskManager", return_value=mock_risk), \
+         patch("main.PositionManager", return_value=mock_positions), \
+         patch("main.StateStore", return_value=mock_state), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        main.startup()
+    mock_risk.restore_counters.assert_called_once_with(-2000.0, 5)
+    mock_positions.restore.assert_called_once_with(saved["positions"])
+
+
+def test_startup_no_restore_when_no_saved_state():
+    mock_state = MagicMock()
+    mock_state.load.return_value = None
+    mock_risk = MagicMock()
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=_make_ctx()["cfg"]), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()), \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
+         patch("main.OrderExecutor", return_value=MagicMock()), \
+         patch("main.RiskManager", return_value=mock_risk), \
+         patch("main.PositionManager", return_value=MagicMock()), \
+         patch("main.StateStore", return_value=mock_state), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        main.startup()
+    mock_risk.restore_counters.assert_not_called()
+
+
+def test_run_saves_state_on_shutdown():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = False
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        main.run()
+    ctx["state"].save.assert_called()
+
+
+# ── Watchdog exit codes ───────────────────────────────────────────────────────
+
+def test_run_returns_zero_on_clean_shutdown():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = False
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        assert main.run() == 0
+
+
+def test_run_returns_one_on_unhandled_exception():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = True
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle", side_effect=RuntimeError("boom")), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()):
+        assert main.run() == 1
+
+
+# ── Heartbeat ─────────────────────────────────────────────────────────────────
+
+def test_heartbeat_fires_after_interval():
+    ctx = _make_ctx()
+    hb = {"last": 0.0}
+    with patch("main.time.monotonic", return_value=10_000.0):
+        main._maybe_heartbeat(ctx, hb)
+    ctx["alert"].send_raw.assert_called_once()
+    text = ctx["alert"].send_raw.call_args.args[0]
+    assert "Heartbeat" in text
+    assert "0 open positions" in text
+    assert hb["last"] == 10_000.0
+
+
+def test_heartbeat_does_not_fire_before_interval():
+    ctx = _make_ctx()
+    hb = {"last": 9_000.0}  # 1000s ago < 3600s interval
+    with patch("main.time.monotonic", return_value=10_000.0):
+        main._maybe_heartbeat(ctx, hb)
+    ctx["alert"].send_raw.assert_not_called()
+
+
+def test_heartbeat_reports_positions_and_streamer():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["streamer"].is_connected = True
+    hb = {"last": 0.0}
+    with patch("main.time.monotonic", return_value=10_000.0):
+        main._maybe_heartbeat(ctx, hb)
+    text = ctx["alert"].send_raw.call_args.args[0]
+    assert "1 open positions" in text
+    assert "streamer connected" in text

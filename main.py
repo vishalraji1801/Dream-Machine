@@ -4,6 +4,7 @@ Startup validation, trading cycle orchestration, EOD square-off, graceful shutdo
 """
 import os
 import signal
+import sys
 import threading
 import time
 from datetime import datetime
@@ -20,6 +21,7 @@ from src.order_executor import OrderExecutor
 from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
+from src.state_store import StateStore
 from src.strategy import generate_signal
 from src.telegram_controller import TelegramController
 from src.trade_ledger import TradeLedger
@@ -79,7 +81,18 @@ def startup() -> dict:
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
         "ledger": TradeLedger(),
+        "state": StateStore(),
     }
+
+    saved = ctx["state"].load()
+    if saved:
+        ctx["risk"].restore_counters(saved["daily_pnl"], saved["trades_today"])
+        ctx["positions"].restore(saved["positions"])
+        alert.send_raw(
+            f"State restored after restart: {len(saved['positions'])} open positions, "
+            f"P&L Rs.{saved['daily_pnl']:.2f}, {saved['trades_today']} trades today."
+        )
+
     logger.info("All modules initialised — bot ready")
     return ctx
 
@@ -320,6 +333,29 @@ def eod_square_off(ctx: dict) -> None:
     logger.info("All positions squared off")
 
 
+def _save_state(ctx: dict) -> None:
+    """Persist positions and daily counters for crash recovery (SCRUM-62)."""
+    risk = ctx["risk"]
+    ctx["state"].save(risk._daily_pnl, risk._trades_today,
+                      ctx["positions"].get_open_positions())
+
+
+def _maybe_heartbeat(ctx: dict, hb: dict) -> None:
+    """Send an hourly 'alive' message so silence itself becomes an alert (SCRUM-64)."""
+    interval = ctx["cfg"]["scheduler"].get("heartbeat_interval_minutes", 60) * 60
+    now = time.monotonic()
+    if now - hb["last"] < interval:
+        return
+    hb["last"] = now
+    open_count = len(ctx["positions"].get_open_positions())
+    streamer = ctx.get("streamer")
+    stream_state = "connected" if (streamer and streamer.is_connected) else "disconnected"
+    ctx["alert"].send_raw(
+        f"Heartbeat: alive | {open_count} open positions | "
+        f"streamer {stream_state} | P&L Rs.{ctx['risk']._daily_pnl:.2f}"
+    )
+
+
 def _send_daily_summary(ctx: dict) -> None:
     risk = ctx["risk"]
     ctx["alert"].send(
@@ -336,8 +372,10 @@ def _send_daily_summary(ctx: dict) -> None:
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def run() -> None:
-    """Bot entry point: startup, loop, graceful shutdown (FR-22, FR-24)."""
+def run() -> int:
+    """Bot entry point: startup, loop, graceful shutdown (FR-22, FR-24).
+    Returns process exit code: 0 for clean shutdown, 1 on unhandled crash
+    (the watchdog in start_bot.bat restarts only on non-zero)."""
     ctx = startup()
     cfg = ctx["cfg"]
     risk = ctx["risk"]
@@ -379,33 +417,41 @@ def run() -> None:
     controller.start()
 
     stop_reason = "normal shutdown"
+    exit_code = 0
+    hb = {"last": time.monotonic()}
     try:
         while not shutdown["requested"] and not stop_event.is_set():
+            _maybe_heartbeat(ctx, hb)
             if not risk.is_market_open():
                 if positions.is_square_off_time():
                     eod_square_off(ctx)
                     _send_daily_summary(ctx)
+                    _save_state(ctx)
                     logger.info("EOD complete — waiting for next session")
                 time.sleep(30)
                 continue
             trading_cycle(ctx)
+            _save_state(ctx)
             time.sleep(interval)
     except KeyboardInterrupt:
         stop_reason = "keyboard interrupt"
         logger.info("KeyboardInterrupt — initiating shutdown")
     except Exception as exc:
         stop_reason = f"unhandled exception: {exc}"
+        exit_code = 1
         logger.critical(f"Unhandled exception in main loop: {exc}", exc_info=True)
         alert.send("critical_error", module="main", message=str(exc))
     finally:
         eod_square_off(ctx)
         _send_daily_summary(ctx)
+        _save_state(ctx)
         alert.send("bot_stopped", reason=stop_reason)
         if "streamer" in ctx:
             ctx["streamer"].disconnect()
         controller.stop()
         logger.info("Bot shutdown complete")
+    return exit_code
 
 
 if __name__ == "__main__":
-    run()
+    sys.exit(run())

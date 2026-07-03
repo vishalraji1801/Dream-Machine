@@ -89,6 +89,7 @@ risk:
 
 scheduler:
   cycle_interval_seconds: 300
+  heartbeat_interval_minutes: 60
 
 logging:
   level: INFO
