@@ -102,8 +102,9 @@ def startup() -> dict:
 
 # ── Trading cycle ─────────────────────────────────────────────────────────────
 
-def trading_cycle(ctx: dict) -> None:
-    """One complete 5-minute trading cycle (FR-22)."""
+def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
+    """One complete 5-minute trading cycle (FR-22).
+    allow_entries=False (Telegram /pause) manages positions but takes no new trades."""
     risk = ctx["risk"]
     triggered, reason = risk.check_circuit_breakers()
     if triggered:
@@ -111,7 +112,10 @@ def trading_cycle(ctx: dict) -> None:
         logger.warning(f"Circuit breaker active: {reason} — skipping cycle")
         return
     _manage_open_positions(ctx)
-    _scan_entries(ctx)
+    if allow_entries:
+        _scan_entries(ctx)
+    else:
+        logger.info("Paused — entry scan skipped")
 
 
 def _manage_open_positions(ctx: dict) -> None:
@@ -464,6 +468,8 @@ def run() -> int:
 
     signal.signal(signal.SIGTERM, _on_sigterm)
 
+    pause_event = threading.Event()
+
     def _status_message() -> str:
         open_pos = positions.get_open_positions()
         pos_lines = "\n".join(
@@ -471,7 +477,7 @@ def run() -> int:
             for p in open_pos
         ) or "  None"
         return (
-            f"Bot Status\n"
+            f"Bot Status{' — PAUSED' if pause_event.is_set() else ''}\n"
             f"Open positions ({len(open_pos)}):\n{pos_lines}\n"
             f"Daily P&L: Rs.{risk._daily_pnl:.2f}\n"
             f"Trades today: {risk._trades_today}"
@@ -482,6 +488,7 @@ def run() -> int:
         chat_id=os.getenv("TELEGRAM_CHAT_ID"),
         stop_event=stop_event,
         status_fn=_status_message,
+        pause_event=pause_event,
     )
     controller.start()
 
@@ -499,7 +506,7 @@ def run() -> int:
                     logger.info("EOD complete — waiting for next session")
                 time.sleep(30)
                 continue
-            trading_cycle(ctx)
+            trading_cycle(ctx, allow_entries=not pause_event.is_set())
             _save_state(ctx)
             time.sleep(interval)
     except KeyboardInterrupt:

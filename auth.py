@@ -1,11 +1,16 @@
 """
 Daily Kite login script — automated headless authentication.
-Reads ZERODHA_USER_ID and ZERODHA_PASSWORD from config/.env.
-Prompts for TOTP only, then saves the access token and starts the bot.
-Usage: run start_bot.bat (or python auth.py directly)
+Reads ZERODHA_USER_ID from config/.env; password comes from Windows
+Credential Manager (keyring) with .env ZERODHA_PASSWORD as fallback.
+Prompts for TOTP only, then saves the access token.
+
+Usage:
+    python auth.py                 # daily login (run via start_bot.bat)
+    python auth.py --set-password  # store password securely, one time
 """
 import os
 import sys
+from typing import Optional
 from urllib.parse import parse_qs, urlparse
 
 import requests as req
@@ -13,6 +18,38 @@ from dotenv import load_dotenv
 from kiteconnect import KiteConnect
 
 load_dotenv(dotenv_path=os.path.join("config", ".env"))
+
+_KEYRING_SERVICE = "trading-bot"
+
+
+def _get_password(user_id: str) -> Optional[str]:
+    """Windows Credential Manager first, .env fallback."""
+    try:
+        import keyring
+        pw = keyring.get_password(_KEYRING_SERVICE, user_id)
+        if pw:
+            return pw
+    except Exception:
+        pass
+    return os.getenv("ZERODHA_PASSWORD")
+
+
+def set_password() -> None:
+    """Store the Zerodha password in Windows Credential Manager."""
+    import getpass
+    import keyring
+
+    user_id = os.getenv("ZERODHA_USER_ID")
+    if not user_id:
+        print("ERROR: ZERODHA_USER_ID missing from config/.env")
+        sys.exit(1)
+    pw = getpass.getpass(f"Zerodha password for {user_id}: ")
+    if not pw:
+        print("ERROR: empty password.")
+        sys.exit(1)
+    keyring.set_password(_KEYRING_SERVICE, user_id, pw)
+    print("Password stored in Windows Credential Manager.")
+    print("You can now remove ZERODHA_PASSWORD from config/.env.")
 
 
 def run_auth() -> str:
@@ -23,15 +60,20 @@ def run_auth() -> str:
     api_key    = os.getenv("KITE_API_KEY")
     api_secret = os.getenv("KITE_API_SECRET")
     user_id    = os.getenv("ZERODHA_USER_ID")
-    password   = os.getenv("ZERODHA_PASSWORD")
     token_path = os.getenv("KITE_ACCESS_TOKEN_PATH", "./token.txt")
 
     missing = [k for k, v in {
         "KITE_API_KEY": api_key, "KITE_API_SECRET": api_secret,
-        "ZERODHA_USER_ID": user_id, "ZERODHA_PASSWORD": password,
+        "ZERODHA_USER_ID": user_id,
     }.items() if not v]
     if missing:
         print(f"ERROR: Missing from config/.env: {', '.join(missing)}")
+        sys.exit(1)
+
+    password = _get_password(user_id)
+    if not password:
+        print("ERROR: No password found. Run 'python auth.py --set-password' "
+              "or set ZERODHA_PASSWORD in config/.env")
         sys.exit(1)
 
     totp = input("Enter TOTP: ").strip()
@@ -130,4 +172,7 @@ def _capture_callback_url(session: req.Session, url: str) -> str:
 
 
 if __name__ == "__main__":
-    run_auth()
+    if "--set-password" in sys.argv:
+        set_password()
+    else:
+        run_auth()

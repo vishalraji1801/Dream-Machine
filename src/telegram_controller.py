@@ -18,6 +18,8 @@ class TelegramController:
     """
     Polls Telegram for incoming commands.
     /stop   — sets stop_event, triggering graceful bot shutdown
+    /pause  — sets pause_event: no new entries, open positions still managed
+    /resume — clears pause_event
     /status — calls status_fn() and replies with current bot state
     """
 
@@ -29,10 +31,12 @@ class TelegramController:
         chat_id: str,
         stop_event: threading.Event,
         status_fn: Optional[Callable[[], str]] = None,
+        pause_event: Optional[threading.Event] = None,
     ):
         self._base = f"https://api.telegram.org/bot{bot_token}"
         self._chat_id = str(chat_id)
         self._stop_event = stop_event
+        self._pause_event = pause_event
         self._status_fn = status_fn
         self._offset = 0
         self._thread: Optional[threading.Thread] = None
@@ -85,12 +89,28 @@ class TelegramController:
             self._reply("Shutdown requested. Squaring off all positions and stopping...")
             self._stop_event.set()
 
+        elif text == "/pause":
+            if self._pause_event is None:
+                self._reply("Pause is not supported in this session.")
+            else:
+                self._pause_event.set()
+                logger.warning("Received /pause — new entries suspended")
+                self._reply("Paused. No new entries; open positions still managed. /resume to continue.")
+
+        elif text == "/resume":
+            if self._pause_event is None:
+                self._reply("Pause is not supported in this session.")
+            else:
+                self._pause_event.clear()
+                logger.warning("Received /resume — entries re-enabled")
+                self._reply("Resumed. New entries re-enabled.")
+
         elif text == "/status":
             status = self._status_fn() if self._status_fn else "Status unavailable."
             self._reply(status)
 
         else:
-            self._reply(f"Unknown command: {text}\nAvailable: /stop, /status")
+            self._reply(f"Unknown command: {text}\nAvailable: /stop, /pause, /resume, /status")
 
     def _reply(self, text: str) -> None:
         try:

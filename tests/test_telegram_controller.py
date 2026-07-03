@@ -172,6 +172,56 @@ def test_status_fn_none_sends_unavailable(stop_event):
     assert "unavailable" in mock_post.call_args.kwargs["json"]["text"].lower()
 
 
+# ── /pause and /resume (SCRUM-70) ─────────────────────────────────────────────
+
+def _ctrl_with_pause(stop_event):
+    pause_event = threading.Event()
+    ctrl = TelegramController("tok", "123456", stop_event, pause_event=pause_event)
+    return ctrl, pause_event
+
+
+def _respond_with(ctrl, text):
+    response = MagicMock()
+    response.json.return_value = _updates(text)
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post") as mock_post:
+        ctrl._poll_once()
+    return mock_post
+
+
+def test_pause_command_sets_pause_event(stop_event):
+    ctrl, pause_event = _ctrl_with_pause(stop_event)
+    _respond_with(ctrl, "/pause")
+    assert pause_event.is_set()
+    assert not stop_event.is_set()  # pause is not stop
+
+
+def test_resume_command_clears_pause_event(stop_event):
+    ctrl, pause_event = _ctrl_with_pause(stop_event)
+    pause_event.set()
+    _respond_with(ctrl, "/resume")
+    assert not pause_event.is_set()
+
+
+def test_pause_reply_mentions_resume(stop_event):
+    ctrl, _ = _ctrl_with_pause(stop_event)
+    mock_post = _respond_with(ctrl, "/pause")
+    assert "/resume" in mock_post.call_args.kwargs["json"]["text"]
+
+
+def test_pause_without_pause_event_replies_gracefully(ctrl):
+    mock_post = _respond_with(ctrl, "/pause")
+    assert "not supported" in mock_post.call_args.kwargs["json"]["text"].lower()
+
+
+def test_help_lists_pause_and_resume(stop_event):
+    ctrl, _ = _ctrl_with_pause(stop_event)
+    mock_post = _respond_with(ctrl, "/nonsense")
+    text = mock_post.call_args.kwargs["json"]["text"]
+    assert "/pause" in text and "/resume" in text
+
+
 # ── reply failure does not raise ──────────────────────────────────────────────
 
 def test_reply_failure_does_not_crash(ctrl):

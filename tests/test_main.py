@@ -243,6 +243,15 @@ def test_cycle_skips_on_circuit_breaker():
     ctx["fetcher"].get_quotes.assert_not_called()
 
 
+def test_cycle_skips_entries_when_paused():
+    ctx = _make_ctx()
+    with patch("main._manage_open_positions") as mock_manage, \
+         patch("main._scan_entries") as mock_scan:
+        main.trading_cycle(ctx, allow_entries=False)
+    mock_manage.assert_called_once()
+    mock_scan.assert_not_called()
+
+
 def test_cycle_calls_manage_positions_and_scan():
     ctx = _make_ctx(circuit_breaker=(False, ""))
     with patch("main._manage_open_positions") as mock_manage, \
@@ -496,7 +505,7 @@ def test_run_stop_event_exits_loop():
             stop_event_ref = {"e": None}
             original_tc = main.TelegramController
 
-            def fake_tc(bot_token, chat_id, stop_event, status_fn=None):
+            def fake_tc(bot_token, chat_id, stop_event, status_fn=None, pause_event=None):
                 stop_event_ref["e"] = stop_event
                 m = MagicMock()
                 m.start = lambda: stop_event.set()  # set immediately

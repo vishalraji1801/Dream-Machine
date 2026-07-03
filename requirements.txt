@@ -6,3 +6,4 @@ requests
 pandas
 ta
 pytest
+keyring
