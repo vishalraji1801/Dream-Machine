@@ -53,17 +53,9 @@ def set_password() -> None:
 
 
 def _market_closed_today() -> bool:
-    """Weekend or NSE holiday (from config.yaml trading.holidays)."""
-    try:
-        from datetime import datetime
-        import yaml
-        with open(os.path.join("config", "config.yaml")) as f:
-            cfg = yaml.safe_load(f)
-        holidays = {str(h) for h in cfg["trading"].get("holidays", [])}
-        today = datetime.now().date()
-        return today.weekday() >= 5 or today.isoformat() in holidays
-    except Exception:
-        return False  # if the check itself fails, don't block authentication
+    """Weekend check — no trading on Saturday/Sunday."""
+    from datetime import datetime
+    return datetime.now().date().weekday() >= 5
 
 
 def run_auth() -> str:
@@ -72,7 +64,7 @@ def run_auth() -> str:
     Saves it to KITE_ACCESS_TOKEN_PATH. Exits on failure.
     """
     if _market_closed_today() and "--force" not in sys.argv:
-        print("Market is closed today (weekend/holiday) — not starting.")
+        print("Market is closed today (weekend) — not starting.")
         print("Use 'python auth.py --force' to authenticate anyway.")
         sys.exit(1)
 

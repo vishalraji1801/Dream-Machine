@@ -1,6 +1,6 @@
 """
 Market calendar — is the market open right now?
-Combines weekday, the NSE holiday list from config, and market hours.
+Combines weekday check and market hours from config.
 """
 from datetime import date, datetime, time
 from typing import Optional
@@ -13,18 +13,13 @@ logger = get_logger("market_calendar")
 class MarketCalendar:
     def __init__(self, cfg: dict):
         t = cfg["trading"]
-        self._holidays = {
-            date.fromisoformat(str(h)) for h in t.get("holidays", [])
-        }
         self._open = time(*map(int, t["market_open"].split(":")))
         self._close = time(*map(int, t["market_close"].split(":")))
 
     def is_trading_day(self, d: Optional[date] = None) -> bool:
-        """Weekday and not an NSE holiday."""
+        """Monday to Friday."""
         d = d or datetime.now().date()
-        if d.weekday() >= 5:  # Saturday=5, Sunday=6
-            return False
-        return d not in self._holidays
+        return d.weekday() < 5  # Saturday=5, Sunday=6
 
     def is_market_open_now(self, now: Optional[datetime] = None) -> bool:
         """Trading day and within market hours."""
@@ -35,5 +30,5 @@ class MarketCalendar:
 
     def status_text(self) -> str:
         if not self.is_trading_day():
-            return "CLOSED (holiday/weekend)"
+            return "CLOSED (weekend)"
         return "OPEN" if self.is_market_open_now() else "CLOSED (outside hours)"
