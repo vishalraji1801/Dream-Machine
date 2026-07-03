@@ -68,6 +68,9 @@ class DataFetcher:
                 logger.warning(f"No quote data returned for {symbol}")
                 continue
             q = raw[key]
+            depth = q.get("depth") or {}
+            buy_depth = depth.get("buy") or []
+            sell_depth = depth.get("sell") or []
             quotes[symbol] = {
                 "ltp":    q["last_price"],
                 "open":   q["ohlc"]["open"],
@@ -75,6 +78,8 @@ class DataFetcher:
                 "low":    q["ohlc"]["low"],
                 "close":  q["ohlc"]["close"],
                 "volume": q["volume"],
+                "bid":    buy_depth[0].get("price") if buy_depth else None,
+                "ask":    sell_depth[0].get("price") if sell_depth else None,
             }
         logger.info(f"Quotes fetched: {len(quotes)}/{len(symbols)} symbols")
         return quotes

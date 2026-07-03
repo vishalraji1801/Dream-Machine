@@ -4,6 +4,7 @@ Startup validation, trading cycle orchestration, EOD square-off, graceful shutdo
 """
 import os
 import signal
+import sys
 import threading
 import time
 from datetime import datetime
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 
 from src.alert_manager import AlertManager
 from src.auth import load_kite_session
+from src.costs import estimate_intraday_costs, trade_leg_values
 from src.data_fetcher import DataFetcher
 from src.data_streamer import DataStreamer
 from src.logger import get_logger, setup_logging
@@ -20,7 +22,8 @@ from src.order_executor import OrderExecutor
 from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
-from src.strategy import generate_signal
+from src.state_store import StateStore
+from src.strategy import generate_signal, market_regime
 from src.telegram_controller import TelegramController
 from src.trade_ledger import TradeLedger
 
@@ -56,7 +59,9 @@ def startup() -> dict:
     )
 
     fetcher = DataFetcher(kite, cfg)
-    symbols = cfg["trading"]["watchlist"]
+    symbols = list(cfg["trading"]["watchlist"])
+    if cfg["strategy"].get("regime_filter_enabled"):
+        symbols.append(cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
     if not fetcher.load_instruments(symbols):
         raise RuntimeError("Instrument load failed — cannot start without token map")
 
@@ -79,15 +84,27 @@ def startup() -> dict:
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
         "ledger": TradeLedger(),
+        "state": StateStore(),
     }
+
+    saved = ctx["state"].load()
+    if saved:
+        ctx["risk"].restore_counters(saved["daily_pnl"], saved["trades_today"])
+        ctx["positions"].restore(saved["positions"])
+        alert.send_raw(
+            f"State restored after restart: {len(saved['positions'])} open positions, "
+            f"P&L Rs.{saved['daily_pnl']:.2f}, {saved['trades_today']} trades today."
+        )
+
     logger.info("All modules initialised — bot ready")
     return ctx
 
 
 # ── Trading cycle ─────────────────────────────────────────────────────────────
 
-def trading_cycle(ctx: dict) -> None:
-    """One complete 5-minute trading cycle (FR-22)."""
+def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
+    """One complete 5-minute trading cycle (FR-22).
+    allow_entries=False (Telegram /pause) manages positions but takes no new trades."""
     risk = ctx["risk"]
     triggered, reason = risk.check_circuit_breakers()
     if triggered:
@@ -95,7 +112,10 @@ def trading_cycle(ctx: dict) -> None:
         logger.warning(f"Circuit breaker active: {reason} — skipping cycle")
         return
     _manage_open_positions(ctx)
-    _scan_entries(ctx)
+    if allow_entries:
+        _scan_entries(ctx)
+    else:
+        logger.info("Paused — entry scan skipped")
 
 
 def _manage_open_positions(ctx: dict) -> None:
@@ -136,6 +156,10 @@ def _scan_entries(ctx: dict) -> None:
     positions = ctx["positions"]
     fetcher = ctx["fetcher"]
 
+    if not _within_entry_window(cfg):
+        logger.info("Outside entry window — managing positions only")
+        return
+
     watchlist = cfg["trading"]["watchlist"]
     open_symbols = {p.symbol for p in positions.get_open_positions()}
     candidates = [s for s in watchlist if s not in open_symbols]
@@ -147,16 +171,27 @@ def _scan_entries(ctx: dict) -> None:
         logger.warning("Skipping entry scan — quote fetch failed")
         return
 
+    regime = _get_regime(ctx)
+    if regime == "NEUTRAL":
+        logger.info("Market regime NEUTRAL — no entries this cycle")
+        return
+
     margin = _get_margin(ctx)
 
     for symbol in candidates:
         if symbol not in quotes:
+            continue
+        if not _spread_ok(symbol, quotes[symbol], cfg):
             continue
         df = fetcher.get_candles(symbol)
         if df is None or df.empty:
             continue
         signal = generate_signal(symbol, df, cfg["strategy"])
         if signal.direction == "HOLD":
+            continue
+        if regime and ((signal.direction == "BUY" and regime != "BULLISH")
+                       or (signal.direction == "SELL" and regime != "BEARISH")):
+            logger.info(f"{symbol}: {signal.direction} signal against {regime} regime — skipped")
             continue
         ctx["alert"].send("signal_generated", direction=signal.direction, symbol=symbol,
                           entry=signal.entry_price, sl=signal.stop_loss, target=signal.target)
@@ -170,6 +205,51 @@ def _scan_entries(ctx: dict) -> None:
             continue
         _execute_entry(ctx, symbol, signal, qty)
         break  # one entry per cycle to stay within position limits
+
+
+def _within_entry_window(cfg: dict) -> bool:
+    """No new entries outside [entry_start_time, entry_end_time] (SCRUM-68).
+    Window applies only when both keys are configured."""
+    t = cfg["trading"]
+    start, end = t.get("entry_start_time"), t.get("entry_end_time")
+    if not start or not end:
+        return True
+    from datetime import time as dtime
+    parse = lambda s: dtime(*map(int, s.split(":")))
+    return parse(start) <= datetime.now().time() <= parse(end)
+
+
+def _get_regime(ctx: dict):
+    """NIFTY trend gate for entries (SCRUM-67).
+    Returns BULLISH/BEARISH/NEUTRAL, or None when the filter is disabled or
+    index data is unavailable (fail-open: filter off, entries allowed)."""
+    cfg = ctx["cfg"]
+    if not cfg["strategy"].get("regime_filter_enabled"):
+        return None
+    index_symbol = cfg["strategy"].get("regime_index_symbol", "NIFTY 50")
+    df = ctx["fetcher"].get_candles(index_symbol)
+    if df is None or df.empty:
+        logger.warning("Regime filter: index candles unavailable — filter skipped")
+        return None
+    regime = market_regime(df, cfg["strategy"])
+    logger.info(f"Market regime: {regime}")
+    return regime
+
+
+def _spread_ok(symbol: str, quote: dict, cfg: dict) -> bool:
+    """Liquidity guard: block entry when the bid-ask spread is too wide (SCRUM-66).
+    Quotes without depth data (e.g. from the WebSocket streamer) pass the check."""
+    max_spread = cfg["risk"].get("max_spread_pct")
+    if not max_spread:
+        return True
+    bid, ask, ltp = quote.get("bid"), quote.get("ask"), quote.get("ltp")
+    if not bid or not ask or not ltp:
+        return True
+    spread_pct = (ask - bid) / ltp * 100
+    if spread_pct > max_spread:
+        logger.info(f"{symbol}: spread {spread_pct:.3f}% > {max_spread}% — entry skipped")
+        return False
+    return True
 
 
 def _get_quotes(ctx: dict, symbols: list) -> dict | None:
@@ -217,7 +297,10 @@ def _execute_exit(ctx: dict, pos, ltp: float, reason: str) -> None:
     if removed is None:
         return
 
-    pnl = removed.unrealized_pnl(exit_price)
+    buy_v, sell_v = trade_leg_values(removed.direction, removed.entry_price,
+                                     exit_price, removed.quantity)
+    costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+    pnl = removed.unrealized_pnl(exit_price) - costs
     risk.record_pnl(pnl)
     risk.record_trade()
     risk.clear_api_errors()
@@ -306,7 +389,10 @@ def eod_square_off(ctx: dict) -> None:
             exit_price = result["average_price"] if result else ltp
         else:
             exit_price = ltp
-        pnl = pos.unrealized_pnl(exit_price)
+        buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
+                                         exit_price, pos.quantity)
+        costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+        pnl = pos.unrealized_pnl(exit_price) - costs
         risk.record_pnl(pnl)
         positions.remove_position(pos.symbol)
         ctx["ledger"].record(
@@ -318,6 +404,29 @@ def eod_square_off(ctx: dict) -> None:
         logger.info(f"EOD square-off: {pos.symbol} @ {exit_price} | P&L={pnl:.2f}")
 
     logger.info("All positions squared off")
+
+
+def _save_state(ctx: dict) -> None:
+    """Persist positions and daily counters for crash recovery (SCRUM-62)."""
+    risk = ctx["risk"]
+    ctx["state"].save(risk._daily_pnl, risk._trades_today,
+                      ctx["positions"].get_open_positions())
+
+
+def _maybe_heartbeat(ctx: dict, hb: dict) -> None:
+    """Send an hourly 'alive' message so silence itself becomes an alert (SCRUM-64)."""
+    interval = ctx["cfg"]["scheduler"].get("heartbeat_interval_minutes", 60) * 60
+    now = time.monotonic()
+    if now - hb["last"] < interval:
+        return
+    hb["last"] = now
+    open_count = len(ctx["positions"].get_open_positions())
+    streamer = ctx.get("streamer")
+    stream_state = "connected" if (streamer and streamer.is_connected) else "disconnected"
+    ctx["alert"].send_raw(
+        f"Heartbeat: alive | {open_count} open positions | "
+        f"streamer {stream_state} | P&L Rs.{ctx['risk']._daily_pnl:.2f}"
+    )
 
 
 def _send_daily_summary(ctx: dict) -> None:
@@ -336,8 +445,10 @@ def _send_daily_summary(ctx: dict) -> None:
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
 
-def run() -> None:
-    """Bot entry point: startup, loop, graceful shutdown (FR-22, FR-24)."""
+def run() -> int:
+    """Bot entry point: startup, loop, graceful shutdown (FR-22, FR-24).
+    Returns process exit code: 0 for clean shutdown, 1 on unhandled crash
+    (the watchdog in start_bot.bat restarts only on non-zero)."""
     ctx = startup()
     cfg = ctx["cfg"]
     risk = ctx["risk"]
@@ -357,6 +468,8 @@ def run() -> None:
 
     signal.signal(signal.SIGTERM, _on_sigterm)
 
+    pause_event = threading.Event()
+
     def _status_message() -> str:
         open_pos = positions.get_open_positions()
         pos_lines = "\n".join(
@@ -364,7 +477,7 @@ def run() -> None:
             for p in open_pos
         ) or "  None"
         return (
-            f"Bot Status\n"
+            f"Bot Status{' — PAUSED' if pause_event.is_set() else ''}\n"
             f"Open positions ({len(open_pos)}):\n{pos_lines}\n"
             f"Daily P&L: Rs.{risk._daily_pnl:.2f}\n"
             f"Trades today: {risk._trades_today}"
@@ -375,37 +488,46 @@ def run() -> None:
         chat_id=os.getenv("TELEGRAM_CHAT_ID"),
         stop_event=stop_event,
         status_fn=_status_message,
+        pause_event=pause_event,
     )
     controller.start()
 
     stop_reason = "normal shutdown"
+    exit_code = 0
+    hb = {"last": time.monotonic()}
     try:
         while not shutdown["requested"] and not stop_event.is_set():
+            _maybe_heartbeat(ctx, hb)
             if not risk.is_market_open():
                 if positions.is_square_off_time():
                     eod_square_off(ctx)
                     _send_daily_summary(ctx)
+                    _save_state(ctx)
                     logger.info("EOD complete — waiting for next session")
                 time.sleep(30)
                 continue
-            trading_cycle(ctx)
+            trading_cycle(ctx, allow_entries=not pause_event.is_set())
+            _save_state(ctx)
             time.sleep(interval)
     except KeyboardInterrupt:
         stop_reason = "keyboard interrupt"
         logger.info("KeyboardInterrupt — initiating shutdown")
     except Exception as exc:
         stop_reason = f"unhandled exception: {exc}"
+        exit_code = 1
         logger.critical(f"Unhandled exception in main loop: {exc}", exc_info=True)
         alert.send("critical_error", module="main", message=str(exc))
     finally:
         eod_square_off(ctx)
         _send_daily_summary(ctx)
+        _save_state(ctx)
         alert.send("bot_stopped", reason=stop_reason)
         if "streamer" in ctx:
             ctx["streamer"].disconnect()
         controller.stop()
         logger.info("Bot shutdown complete")
+    return exit_code
 
 
 if __name__ == "__main__":
-    run()
+    sys.exit(run())

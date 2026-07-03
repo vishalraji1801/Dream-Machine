@@ -109,6 +109,35 @@ def generate_signal(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
     return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_conditions_met")
 
 
+Regime = Literal["BULLISH", "BEARISH", "NEUTRAL"]
+
+
+def market_regime(df: pd.DataFrame, cfg: dict) -> Regime:
+    """
+    Classify the index trend so entries align with the broader market (SCRUM-67).
+    BULLISH: index close above EMA by more than the neutral band.
+    BEARISH: below by more than the band.
+    NEUTRAL: inside the band (choppy) — no entries should be taken.
+    df: index candles [.., close, ..]; cfg: strategy section.
+    """
+    window = cfg.get("regime_ema", 20)
+    band = cfg.get("regime_band_pct", 0.1) / 100
+
+    if df is None or len(df) < window + 5:
+        logger.warning(f"market_regime: insufficient index data ({0 if df is None else len(df)} rows)")
+        return "NEUTRAL"
+
+    ema = EMAIndicator(df["close"], window=window).ema_indicator()
+    last_close = df["close"].iloc[-1]
+    last_ema = ema.iloc[-1]
+
+    if last_close > last_ema * (1 + band):
+        return "BULLISH"
+    if last_close < last_ema * (1 - band):
+        return "BEARISH"
+    return "NEUTRAL"
+
+
 def should_exit(symbol: str, df: pd.DataFrame, position, cfg: dict) -> tuple[bool, str]:
     """
     Check EMA-reversal exit for an open position.

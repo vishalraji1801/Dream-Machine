@@ -57,6 +57,8 @@ trading:
   market_close: "15:30"
   square_off_time: "15:15"
   pre_close_check_time: "15:00"
+  entry_start_time: "09:45"   # no new entries before (opening volatility)
+  entry_end_time: "14:30"     # no new entries after (no time for move to play out)
 
 strategy:
   name: momentum_vwap_breakout
@@ -69,6 +71,10 @@ strategy:
   volume_multiplier: 1.5
   entry_order_type: LIMIT
   sl_order_type: MARKET
+  regime_filter_enabled: true   # gate entries on NIFTY trend
+  regime_index_symbol: "NIFTY 50"
+  regime_ema: 20                # EMA window on 5-min index candles
+  regime_band_pct: 0.1          # neutral band around the EMA (%)
 
 risk:
   total_capital: 500000
@@ -86,9 +92,21 @@ risk:
   max_trades_per_day: 8
   max_consecutive_api_errors: 3
   min_margin_threshold: 25000
+  max_spread_pct: 0.15   # skip entry when bid-ask spread exceeds this % of LTP
+
+costs:
+  enabled: true            # subtract estimated charges from every trade P&L
+  brokerage_pct: 0.03      # per executed order, capped below
+  brokerage_cap: 20        # Rs. cap per order
+  stt_sell_pct: 0.025      # STT on sell leg (intraday equity)
+  exchange_txn_pct: 0.00297  # NSE transaction charge on turnover
+  sebi_pct: 0.0001         # SEBI charges on turnover
+  stamp_buy_pct: 0.003     # stamp duty on buy leg
+  gst_pct: 18.0            # GST on brokerage + exchange + SEBI
 
 scheduler:
   cycle_interval_seconds: 300
+  heartbeat_interval_minutes: 60
 
 logging:
   level: INFO

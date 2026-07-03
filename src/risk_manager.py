@@ -28,6 +28,12 @@ class RiskManager:
         self._halted = False
         logger.info("Daily risk counters reset")
 
+    def restore_counters(self, daily_pnl: float, trades_today: int) -> None:
+        """Restore same-day counters from a saved state file (crash recovery)."""
+        self._daily_pnl = daily_pnl
+        self._trades_today = trades_today
+        logger.warning(f"Risk counters restored: P&L Rs.{daily_pnl:.2f}, {trades_today} trades")
+
     def record_pnl(self, pnl: float) -> None:
         self._daily_pnl += pnl
         logger.info(f"Daily P&L updated: Rs.{self._daily_pnl:.2f}")

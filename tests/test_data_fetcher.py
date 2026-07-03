@@ -91,6 +91,25 @@ def test_get_quotes_formats_instrument_keys(fetcher, mock_kite):
     mock_kite.quote.assert_called_once_with(["NSE:RELIANCE"])
 
 
+def test_get_quotes_extracts_bid_ask_from_depth(fetcher, mock_kite):
+    resp = _quote_response()
+    resp["NSE:RELIANCE"]["depth"] = {
+        "buy":  [{"price": 2864.5, "quantity": 100, "orders": 3}],
+        "sell": [{"price": 2865.5, "quantity": 80, "orders": 2}],
+    }
+    mock_kite.quote.return_value = resp
+    quotes = fetcher.get_quotes(["RELIANCE"])
+    assert quotes["RELIANCE"]["bid"] == 2864.5
+    assert quotes["RELIANCE"]["ask"] == 2865.5
+
+
+def test_get_quotes_bid_ask_none_without_depth(fetcher, mock_kite):
+    mock_kite.quote.return_value = _quote_response()
+    quotes = fetcher.get_quotes(["RELIANCE"])
+    assert quotes["RELIANCE"]["bid"] is None
+    assert quotes["RELIANCE"]["ask"] is None
+
+
 def test_get_quotes_returns_none_after_retries(fetcher, mock_kite):
     mock_kite.quote.side_effect = Exception("Network error")
     with patch("src.data_fetcher.time.sleep"):

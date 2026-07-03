@@ -175,3 +175,19 @@ def test_set_gtt_id_stores_value(pm):
 
 def test_set_gtt_id_noop_for_unknown_symbol(pm):
     pm.set_gtt_id("UNKNOWN", 99)  # should not raise
+
+
+# ── Crash recovery restore ────────────────────────────────────────────────────
+
+def test_restore_readopts_positions(pm):
+    saved = [
+        Position("RELIANCE", "BUY", 2800.0, 10, 2772.0, 2856.0, gtt_id=777),
+        Position("TCS", "SELL", 3500.0, 5, 3535.0, 3430.0),
+    ]
+    pm.restore(saved)
+    assert pm.open_count() == 2
+    pos = next(p for p in pm.get_open_positions() if p.symbol == "RELIANCE")
+    assert pos.gtt_id == 777
+    # restored positions behave normally
+    flag, reason = pm.check_exit("RELIANCE", 2770.0)
+    assert flag is True and reason == "sl_hit"

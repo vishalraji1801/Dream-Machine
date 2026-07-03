@@ -40,9 +40,13 @@ def main() -> None:
     symbols = ([s.strip().upper() for s in args.symbols.split(",") if s.strip()]
                or cfg["trading"]["watchlist"])
 
+    regime_on = cfg["strategy"].get("regime_filter_enabled")
+    index_symbol = cfg["strategy"].get("regime_index_symbol", "NIFTY 50")
+
     kite = load_kite_session()
     fetcher = DataFetcher(kite, cfg)
-    if not fetcher.load_instruments(symbols):
+    load_list = symbols + ([index_symbol] if regime_on else [])
+    if not fetcher.load_instruments(load_list):
         print("ERROR: could not load instrument tokens")
         sys.exit(1)
 
@@ -59,8 +63,14 @@ def main() -> None:
         print("ERROR: no candle data fetched")
         sys.exit(1)
 
+    index_candles = None
+    if regime_on:
+        index_candles = fetcher.get_candles(index_symbol, lookback_days=args.days)
+        if index_candles is None:
+            print(f"  WARNING: no index data for {index_symbol} — regime filter off")
+
     print(f"Running backtest over {sum(len(d) for d in candles.values())} candles...")
-    result = Backtester(cfg, window=args.window).run(candles)
+    result = Backtester(cfg, window=args.window).run(candles, index_candles=index_candles)
     print(format_report(result))
 
 

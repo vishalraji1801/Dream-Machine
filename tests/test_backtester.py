@@ -19,6 +19,7 @@ def cfg():
                  "order_value_cap": 120000, "max_daily_loss": 10000,
                  "max_trades_per_day": 8, "trailing_sl_enabled": False,
                  "trailing_sl_activation_pct": 1.0, "trailing_sl_step_pct": 0.5},
+        "costs": {"enabled": False},  # keep P&L assertions exact; costs tested separately
     }
 
 
@@ -290,6 +291,79 @@ def test_window_limits_dataframe_passed_to_strategy(cfg):
     with patch("src.backtester.generate_signal", side_effect=spy):
         Backtester(cfg, window=10).run(candles)
     assert max(seen_lengths) == 10
+
+
+def test_entry_window_blocks_entries_outside(cfg):
+    cfg["trading"]["entry_start_time"] = "09:45"
+    cfg["trading"]["entry_end_time"] = "14:30"
+    always_buy = lambda symbol, df, cfg_: TradeSignal("BUY", symbol, 100.0, 99.0, 200.0, "t")
+    # candles at 09:20 — before the entry window opens
+    candles = {"A": _candles([(100, 100.5, 99.5, 100, 1000)] * 3, start="09:20")}
+    with patch("src.backtester.generate_signal", side_effect=always_buy):
+        result = Backtester(cfg).run(candles)
+    assert result.total_trades == 0
+
+
+def test_entry_window_allows_entries_inside(cfg):
+    cfg["trading"]["entry_start_time"] = "09:45"
+    cfg["trading"]["entry_end_time"] = "14:30"
+    candles = {"A": _candles([
+        (100, 100.5, 99.5, 100, 1000),
+        (100, 103.0, 100.0, 102.5, 1000),
+    ], start="10:00")}
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
+        result = Backtester(cfg).run(candles)
+    assert result.total_trades == 1
+
+
+def test_regime_filter_blocks_buy_in_bearish_market(cfg):
+    cfg["strategy"]["regime_filter_enabled"] = True
+    always_buy = lambda symbol, df, cfg_: TradeSignal("BUY", symbol, 100.0, 99.0, 200.0, "t")
+    rows = [(100, 100.5, 99.5, 100, 1000)] * 3
+    candles = {"A": _candles(rows)}
+    index = _candles(rows)  # same timestamps
+    with patch("src.backtester.generate_signal", side_effect=always_buy), \
+         patch("src.backtester.market_regime", return_value="BEARISH"):
+        result = Backtester(cfg).run(candles, index_candles=index)
+    assert result.total_trades == 0
+
+
+def test_regime_filter_allows_buy_in_bullish_market(cfg):
+    cfg["strategy"]["regime_filter_enabled"] = True
+    candles = {"A": _candles([
+        (100, 100.5, 99.5, 100, 1000),
+        (100, 103.0, 100.0, 102.5, 1000),
+    ])}
+    index = _candles([(22000, 22010, 21990, 22000, 0)] * 2)
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()), \
+         patch("src.backtester.market_regime", return_value="BULLISH"):
+        result = Backtester(cfg).run(candles, index_candles=index)
+    assert result.total_trades == 1
+
+
+def test_regime_filter_off_without_index_candles(cfg):
+    cfg["strategy"]["regime_filter_enabled"] = True
+    candles = {"A": _candles([
+        (100, 100.5, 99.5, 100, 1000),
+        (100, 103.0, 100.0, 102.5, 1000),
+    ])}
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
+        result = Backtester(cfg).run(candles)  # no index data → filter inactive
+    assert result.total_trades == 1
+
+
+def test_costs_subtracted_from_trade_pnl(cfg):
+    cfg["costs"] = {"enabled": True}
+    candles = {"X": _candles([
+        (100, 100.5, 99.5, 100, 1000),
+        (100, 103.0, 100.0, 102.5, 1000),  # target 102 hit
+    ])}
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
+        result = Backtester(cfg).run(candles)
+    t = result.trades[0]
+    assert t.costs > 0
+    # gross = (102-100) * 1000 = 2000; net must be lower by exactly the costs
+    assert t.pnl == pytest.approx(2000 - t.costs, abs=0.02)
 
 
 def test_format_report_contains_key_metrics():

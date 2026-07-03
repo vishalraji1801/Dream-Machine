@@ -127,3 +127,18 @@ def test_calculate_quantity_capped_by_position_size(rm):
 
 def test_calculate_quantity_zero_risk(rm):
     assert rm.calculate_quantity(1000.0, 1000.0) == 0
+
+
+# ── Crash recovery restore ────────────────────────────────────────────────────
+
+def test_restore_counters(rm):
+    rm.restore_counters(daily_pnl=-4500.0, trades_today=6)
+    assert rm._daily_pnl == -4500.0
+    assert rm._trades_today == 6
+
+
+def test_restored_counters_feed_circuit_breakers(rm):
+    rm.restore_counters(daily_pnl=-10000.0, trades_today=2)
+    ok, reason = rm.check_circuit_breakers()
+    assert ok is False
+    assert "loss" in reason.lower()

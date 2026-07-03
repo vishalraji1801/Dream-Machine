@@ -37,6 +37,7 @@ def _make_ctx(
                  "max_consecutive_api_errors": 3, "min_margin_threshold": 25000},
         "scheduler": {"cycle_interval_seconds": 300},
         "logging": {"level": "INFO", "retention_days": 30},
+        "costs": {"enabled": False},  # cost subtraction tested explicitly
     }
 
     mock_signal = MagicMock()
@@ -84,10 +85,14 @@ def _make_ctx(
     ledger = MagicMock()
     ledger.format_summary.return_value = None
 
+    state = MagicMock()
+    state.load.return_value = None
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions, "ledger": ledger,
+        "state": state,
         "_mock_signal": mock_signal,
     }
 
@@ -236,6 +241,15 @@ def test_cycle_skips_on_circuit_breaker():
     main.trading_cycle(ctx)
     ctx["alert"].send.assert_called_once_with("circuit_breaker", reason="Daily loss limit hit")
     ctx["fetcher"].get_quotes.assert_not_called()
+
+
+def test_cycle_skips_entries_when_paused():
+    ctx = _make_ctx()
+    with patch("main._manage_open_positions") as mock_manage, \
+         patch("main._scan_entries") as mock_scan:
+        main.trading_cycle(ctx, allow_entries=False)
+    mock_manage.assert_called_once()
+    mock_scan.assert_not_called()
 
 
 def test_cycle_calls_manage_positions_and_scan():
@@ -491,7 +505,7 @@ def test_run_stop_event_exits_loop():
             stop_event_ref = {"e": None}
             original_tc = main.TelegramController
 
-            def fake_tc(bot_token, chat_id, stop_event, status_fn=None):
+            def fake_tc(bot_token, chat_id, stop_event, status_fn=None, pause_event=None):
                 stop_event_ref["e"] = stop_event
                 m = MagicMock()
                 m.start = lambda: stop_event.set()  # set immediately
@@ -652,3 +666,322 @@ def test_daily_summary_skips_breakdown_when_no_trades():
     ctx["ledger"].format_summary.return_value = None
     main._send_daily_summary(ctx)
     ctx["alert"].send_raw.assert_not_called()
+
+
+# ── Transaction costs (SCRUM-65) ──────────────────────────────────────────────
+
+def test_execute_exit_subtracts_costs_when_enabled():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 500.0
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["cfg"]["costs"] = {"enabled": True}
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2850.0, "target_hit")
+    recorded = ctx["risk"].record_pnl.call_args.args[0]
+    assert recorded < 500.0          # costs subtracted
+    assert recorded > 450.0          # but only by a realistic amount
+
+
+def test_execute_exit_gross_pnl_when_costs_disabled():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 500.0
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2850.0, "target_hit")
+    assert ctx["risk"].record_pnl.call_args.args[0] == 500.0
+
+
+def test_eod_square_off_subtracts_costs_when_enabled():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 500.0
+    ctx = _make_ctx(open_positions=[pos], quotes={"RELIANCE": {"ltp": 2850.0}})
+    ctx["cfg"]["costs"] = {"enabled": True}
+    main.eod_square_off(ctx)
+    recorded = ctx["risk"].record_pnl.call_args.args[0]
+    assert 450.0 < recorded < 500.0
+
+
+# ── Liquidity guard (SCRUM-66) ────────────────────────────────────────────────
+
+def test_spread_ok_when_tight():
+    cfg = {"risk": {"max_spread_pct": 0.15}}
+    quote = {"ltp": 1000.0, "bid": 999.5, "ask": 1000.5}  # 0.1% spread
+    assert main._spread_ok("X", quote, cfg) is True
+
+
+def test_spread_blocked_when_wide():
+    cfg = {"risk": {"max_spread_pct": 0.15}}
+    quote = {"ltp": 1000.0, "bid": 998.0, "ask": 1002.0}  # 0.4% spread
+    assert main._spread_ok("X", quote, cfg) is False
+
+
+def test_spread_ok_when_no_depth_data():
+    cfg = {"risk": {"max_spread_pct": 0.15}}
+    quote = {"ltp": 1000.0}  # streamer quote — no bid/ask
+    assert main._spread_ok("X", quote, cfg) is True
+
+
+def test_spread_ok_when_not_configured():
+    cfg = {"risk": {}}
+    quote = {"ltp": 1000.0, "bid": 990.0, "ask": 1010.0}
+    assert main._spread_ok("X", quote, cfg) is True
+
+
+def test_scan_skips_symbol_with_wide_spread():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0, "bid": 2840.0, "ask": 2860.0},  # ~0.7%
+                "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["cfg"]["risk"]["max_spread_pct"] = 0.15
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main.generate_signal", return_value=ctx["_mock_signal"]) as mock_gen:
+        main._scan_entries(ctx)
+    called_symbols = [c.args[0] for c in mock_gen.call_args_list]
+    assert "RELIANCE" not in called_symbols  # blocked by spread guard
+    assert "TCS" in called_symbols           # no depth data — allowed
+
+
+# ── Entry time window (SCRUM-68) ──────────────────────────────────────────────
+
+def _at_time(hour, minute):
+    """Patch main.datetime so now() returns the given wall-clock time."""
+    fake_now = MagicMock()
+    fake_now.time.return_value = datetime(2026, 7, 3, hour, minute).time()
+    dt = MagicMock(wraps=datetime)
+    dt.now.return_value = fake_now
+    return patch("main.datetime", dt)
+
+
+def test_entry_window_open_inside():
+    cfg = {"trading": {"entry_start_time": "09:45", "entry_end_time": "14:30"}}
+    with _at_time(11, 0):
+        assert main._within_entry_window(cfg) is True
+
+
+def test_entry_window_closed_before_start():
+    cfg = {"trading": {"entry_start_time": "09:45", "entry_end_time": "14:30"}}
+    with _at_time(9, 20):
+        assert main._within_entry_window(cfg) is False
+
+
+def test_entry_window_closed_after_end():
+    cfg = {"trading": {"entry_start_time": "09:45", "entry_end_time": "14:30"}}
+    with _at_time(15, 0):
+        assert main._within_entry_window(cfg) is False
+
+
+def test_entry_window_always_open_when_unconfigured():
+    cfg = {"trading": {}}
+    assert main._within_entry_window(cfg) is True
+
+
+def test_scan_skips_entries_outside_window():
+    ctx = _make_ctx(quotes={"RELIANCE": {"ltp": 2850.0}})
+    ctx["cfg"]["trading"]["entry_start_time"] = "09:45"
+    ctx["cfg"]["trading"]["entry_end_time"] = "14:30"
+    with _at_time(15, 0):
+        main._scan_entries(ctx)
+    ctx["fetcher"].get_quotes.assert_not_called()
+
+
+# ── Market regime filter (SCRUM-67) ───────────────────────────────────────────
+
+def test_get_regime_none_when_disabled():
+    ctx = _make_ctx()
+    assert main._get_regime(ctx) is None
+
+
+def test_get_regime_none_when_index_data_unavailable():
+    ctx = _make_ctx()
+    ctx["cfg"]["strategy"]["regime_filter_enabled"] = True
+    ctx["fetcher"].get_candles.return_value = None
+    assert main._get_regime(ctx) is None  # fail-open
+
+
+def test_get_regime_returns_market_regime():
+    import pandas as pd
+    ctx = _make_ctx()
+    ctx["cfg"]["strategy"]["regime_filter_enabled"] = True
+    ctx["fetcher"].get_candles.return_value = pd.DataFrame({"close": [1.0]})
+    with patch("main.market_regime", return_value="BULLISH"):
+        assert main._get_regime(ctx) == "BULLISH"
+
+
+def test_scan_no_entries_in_neutral_regime():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["cfg"]["strategy"]["regime_filter_enabled"] = True
+    with patch("main._get_regime", return_value="NEUTRAL"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]) as mock_gen:
+        main._scan_entries(ctx)
+    mock_gen.assert_not_called()
+    ctx["executor"].place_order.assert_not_called()
+
+
+def test_scan_blocks_buy_signal_in_bearish_regime():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BEARISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["executor"].place_order.assert_not_called()
+
+
+def test_scan_allows_buy_signal_in_bullish_regime():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BULLISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["executor"].place_order.assert_called_once()
+
+
+# ── Crash recovery (state store) ──────────────────────────────────────────────
+
+def test_save_state_passes_counters_and_positions():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["risk"]._daily_pnl = -1500.0
+    ctx["risk"]._trades_today = 3
+    main._save_state(ctx)
+    ctx["state"].save.assert_called_once_with(-1500.0, 3, [pos])
+
+
+def test_startup_restores_same_day_state():
+    saved = {"daily_pnl": -2000.0, "trades_today": 5, "positions": [_make_position()]}
+    mock_state = MagicMock()
+    mock_state.load.return_value = saved
+    mock_risk = MagicMock()
+    mock_positions = MagicMock()
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=_make_ctx()["cfg"]), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()) as MockAlert, \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
+         patch("main.OrderExecutor", return_value=MagicMock()), \
+         patch("main.RiskManager", return_value=mock_risk), \
+         patch("main.PositionManager", return_value=mock_positions), \
+         patch("main.StateStore", return_value=mock_state), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        main.startup()
+    mock_risk.restore_counters.assert_called_once_with(-2000.0, 5)
+    mock_positions.restore.assert_called_once_with(saved["positions"])
+
+
+def test_startup_no_restore_when_no_saved_state():
+    mock_state = MagicMock()
+    mock_state.load.return_value = None
+    mock_risk = MagicMock()
+    with patch("main.load_dotenv"), \
+         patch("main.load_config", return_value=_make_ctx()["cfg"]), \
+         patch("main.setup_logging"), \
+         patch("main.load_kite_session", return_value=MagicMock()), \
+         patch("main.AlertManager", return_value=MagicMock()), \
+         patch("main.DataFetcher") as MockFetcher, \
+         patch("main.DataStreamer", return_value=MagicMock()), \
+         patch("main.OrderExecutor", return_value=MagicMock()), \
+         patch("main.RiskManager", return_value=mock_risk), \
+         patch("main.PositionManager", return_value=MagicMock()), \
+         patch("main.StateStore", return_value=mock_state), \
+         patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"}):
+        mock_fetcher = MagicMock()
+        mock_fetcher.load_instruments.return_value = True
+        MockFetcher.return_value = mock_fetcher
+        main.startup()
+    mock_risk.restore_counters.assert_not_called()
+
+
+def test_run_saves_state_on_shutdown():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = False
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        main.run()
+    ctx["state"].save.assert_called()
+
+
+# ── Watchdog exit codes ───────────────────────────────────────────────────────
+
+def test_run_returns_zero_on_clean_shutdown():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = False
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        assert main.run() == 0
+
+
+def test_run_returns_one_on_unhandled_exception():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = True
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle", side_effect=RuntimeError("boom")), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()):
+        assert main.run() == 1
+
+
+# ── Heartbeat ─────────────────────────────────────────────────────────────────
+
+def test_heartbeat_fires_after_interval():
+    ctx = _make_ctx()
+    hb = {"last": 0.0}
+    with patch("main.time.monotonic", return_value=10_000.0):
+        main._maybe_heartbeat(ctx, hb)
+    ctx["alert"].send_raw.assert_called_once()
+    text = ctx["alert"].send_raw.call_args.args[0]
+    assert "Heartbeat" in text
+    assert "0 open positions" in text
+    assert hb["last"] == 10_000.0
+
+
+def test_heartbeat_does_not_fire_before_interval():
+    ctx = _make_ctx()
+    hb = {"last": 9_000.0}  # 1000s ago < 3600s interval
+    with patch("main.time.monotonic", return_value=10_000.0):
+        main._maybe_heartbeat(ctx, hb)
+    ctx["alert"].send_raw.assert_not_called()
+
+
+def test_heartbeat_reports_positions_and_streamer():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["streamer"].is_connected = True
+    hb = {"last": 0.0}
+    with patch("main.time.monotonic", return_value=10_000.0):
+        main._maybe_heartbeat(ctx, hb)
+    text = ctx["alert"].send_raw.call_args.args[0]
+    assert "1 open positions" in text
+    assert "streamer connected" in text
