@@ -18,6 +18,7 @@ _TEMPLATES = {
     "critical_error":     "ERROR: [{module}] {message}. Check logs immediately.",
     "daily_summary":      "EOD Report | Trades: {trades} | Profit: Rs.{profit} | Loss: Rs.{loss} | Net P&L: Rs.{net_pnl}",
     "signal_generated":   "Signal: {direction} {symbol} | Entry: {entry} | SL: {sl} | Target: {target}",
+    "order_partial":      "Order PARTIAL FILL | {symbol} | {filled}/{requested} @ {actual_price} — remainder cancelled",
     "bot_stopped":        "Trading Bot OFFLINE. Reason: {reason}",
     "api_error":          "API ERROR: [{module}] {message}. Bot will retry.",
 }

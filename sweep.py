@@ -14,6 +14,7 @@ import yaml
 from dotenv import load_dotenv
 
 from src.auth import load_kite_session
+from src.candle_cache import CandleCache
 from src.data_fetcher import DataFetcher
 from src.logger import get_logger, setup_logging
 from src.param_sweep import expand_grid, format_sweep_report, run_sweep
@@ -73,10 +74,17 @@ def main() -> None:
         print("ERROR: could not load instrument tokens")
         sys.exit(1)
 
+    cache = CandleCache()
+    interval = cfg["trading"]["timeframe"]
+
+    def _fetch(sym):
+        return cache.get_or_fetch(sym, interval, args.days,
+                                  lambda: fetcher.get_candles(sym, lookback_days=args.days))
+
     print(f"Fetching {args.days}d of candles for {len(symbols)} symbols...")
     candles = {}
     for sym in symbols:
-        df = fetcher.get_candles(sym, lookback_days=args.days)
+        df = _fetch(sym)
         if df is not None and not df.empty:
             candles[sym] = df
 
@@ -84,7 +92,7 @@ def main() -> None:
         print("ERROR: no candle data fetched")
         sys.exit(1)
 
-    index_candles = fetcher.get_candles(index_symbol, lookback_days=args.days) if regime_on else None
+    index_candles = _fetch(index_symbol) if regime_on else None
 
     results = run_sweep(cfg, candles, grid, index_candles=index_candles, window=args.window)
     print(format_sweep_report(results))

@@ -23,7 +23,7 @@ def _make_ctx(
 ):
     cfg = {
         "trading": {"exchange": "NSE", "product_type": "MIS", "watchlist": ["RELIANCE", "TCS"],
-                    "square_off_time": "15:15"},
+                    "square_off_time": "15:15", "market_open": "09:15", "market_close": "15:30"},
         "strategy": {"entry_order_type": "LIMIT", "ema_fast": 9, "ema_slow": 21,
                      "rsi_period": 14, "rsi_entry_threshold": 60,
                      "volume_sma_period": 20, "volume_multiplier": 1.5,
@@ -74,6 +74,7 @@ def _make_ctx(
 
     kite = MagicMock()
     kite.margins.return_value = {"available": {"live_balance": margin}}
+    kite.positions.return_value = {"day": [], "net": []}
 
     alert = MagicMock()
     alert.send.return_value = True
@@ -88,11 +89,16 @@ def _make_ctx(
     state = MagicMock()
     state.load.return_value = None
 
+    calendar = MagicMock()
+    calendar.is_trading_day.return_value = True
+    calendar.is_market_open_now.return_value = True
+    calendar.status_text.return_value = "OPEN"
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions, "ledger": ledger,
-        "state": state,
+        "state": state, "calendar": calendar,
         "_mock_signal": mock_signal,
     }
 
@@ -666,6 +672,143 @@ def test_daily_summary_skips_breakdown_when_no_trades():
     ctx["ledger"].format_summary.return_value = None
     main._send_daily_summary(ctx)
     ctx["alert"].send_raw.assert_not_called()
+
+
+# ── Partial fills (SCRUM-74) ──────────────────────────────────────────────────
+
+def _entry_signal():
+    s = MagicMock()
+    s.direction = "BUY"
+    s.entry_price = 2850.0
+    s.stop_loss = 2821.5
+    s.target = 2907.0
+    return s
+
+
+def test_partial_fill_opens_position_with_filled_qty():
+    ctx = _make_ctx()
+    ctx["executor"].monitor_order.return_value = {
+        "status": "OPEN", "average_price": 2851.0,
+        "filled_quantity": 4, "pending_quantity": 6, "status_message": None,
+    }
+    main._execute_entry(ctx, "RELIANCE", _entry_signal(), 10)
+    ctx["executor"].cancel_order.assert_called_once()  # remainder cancelled
+    args = ctx["positions"].add_position.call_args.args
+    assert args[3] == 4  # quantity = filled, not requested
+    gtt_args = ctx["executor"].place_gtt_oco.call_args.args
+    assert gtt_args[2] == 4  # GTT sized to actual position
+    ctx["alert"].send.assert_any_call("order_partial", symbol="RELIANCE",
+                                      filled=4, requested=10, actual_price=2851.0)
+
+
+def test_zero_fill_timeout_cancels_and_rejects():
+    ctx = _make_ctx()
+    ctx["executor"].monitor_order.return_value = {
+        "status": "OPEN", "average_price": 0.0,
+        "filled_quantity": 0, "pending_quantity": 10, "status_message": "timeout",
+    }
+    main._execute_entry(ctx, "RELIANCE", _entry_signal(), 10)
+    ctx["executor"].cancel_order.assert_called_once()
+    ctx["positions"].add_position.assert_not_called()
+    ctx["alert"].send.assert_any_call("order_rejected", symbol="RELIANCE", reason="timeout")
+
+
+def test_complete_fill_uses_filled_quantity():
+    ctx = _make_ctx()
+    ctx["executor"].monitor_order.return_value = {
+        "status": "COMPLETE", "average_price": 2852.0,
+        "filled_quantity": 10, "pending_quantity": 0, "status_message": None,
+    }
+    main._execute_entry(ctx, "RELIANCE", _entry_signal(), 10)
+    ctx["executor"].cancel_order.assert_not_called()
+    assert ctx["positions"].add_position.call_args.args[3] == 10
+
+
+# ── Broker reconciliation (SCRUM-76) ──────────────────────────────────────────
+
+def test_reconcile_skipped_in_paper_mode():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["cfg"]["paper_trading"] = {"enabled": True}
+    main._reconcile_positions(ctx)
+    ctx["kite"].positions.assert_not_called()
+
+
+def test_reconcile_removes_externally_closed_position():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    pos.unrealized_pnl.return_value = 560.0
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["kite"].positions.return_value = {"day": [{
+        "tradingsymbol": "RELIANCE", "quantity": 0,
+        "buy_price": 2800.0, "sell_price": 2856.0,
+    }]}
+    main._reconcile_positions(ctx)
+    ctx["positions"].remove_position.assert_called_once_with("RELIANCE")
+    ctx["risk"].record_pnl.assert_called_once()
+    ctx["ledger"].record.assert_called_once()
+    assert ctx["ledger"].record.call_args.kwargs["exit_reason"] == "external_exit"
+    ctx["alert"].send_raw.assert_called_once()
+
+
+def test_reconcile_leaves_matching_position_alone():
+    pos = _make_position("RELIANCE", "BUY", qty=10)
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["kite"].positions.return_value = {"day": [{
+        "tradingsymbol": "RELIANCE", "quantity": 10,
+        "buy_price": 2800.0, "sell_price": 0.0,
+    }]}
+    main._reconcile_positions(ctx)
+    ctx["positions"].remove_position.assert_not_called()
+
+
+def test_reconcile_warns_on_quantity_mismatch():
+    pos = _make_position("RELIANCE", "BUY", qty=10)
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["kite"].positions.return_value = {"day": [{
+        "tradingsymbol": "RELIANCE", "quantity": 4,
+        "buy_price": 2800.0, "sell_price": 2856.0,
+    }]}
+    main._reconcile_positions(ctx)
+    ctx["positions"].remove_position.assert_not_called()
+    assert "mismatch" in ctx["alert"].send_raw.call_args.args[0].lower()
+
+
+def test_reconcile_survives_api_failure():
+    pos = _make_position()
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["kite"].positions.side_effect = Exception("API down")
+    main._reconcile_positions(ctx)  # should not raise
+    ctx["positions"].remove_position.assert_not_called()
+
+
+def test_reconcile_sell_position_closed_externally():
+    pos = _make_position("TCS", "SELL", entry=3500.0, qty=5)
+    pos.unrealized_pnl.return_value = 250.0
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["kite"].positions.return_value = {"day": [{
+        "tradingsymbol": "TCS", "quantity": 0,
+        "buy_price": 3450.0, "sell_price": 3500.0,
+    }]}
+    main._reconcile_positions(ctx)
+    ctx["positions"].remove_position.assert_called_once_with("TCS")
+    # exit price for a SELL is the broker buy average
+    assert ctx["ledger"].record.call_args.kwargs["exit_price"] == 3450.0
+
+
+# ── Market calendar in run loop (SCRUM-73) ────────────────────────────────────
+
+def test_run_idles_on_holiday():
+    ctx = _make_ctx()
+    ctx["calendar"].is_trading_day.return_value = False
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle") as mock_cycle, \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        main.run()
+    mock_cycle.assert_not_called()
+    ctx["risk"].is_market_open.assert_not_called()  # calendar short-circuits
 
 
 # ── Transaction costs (SCRUM-65) ──────────────────────────────────────────────

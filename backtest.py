@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from src.auth import load_kite_session
 from src.backtester import Backtester, format_report
+from src.candle_cache import CandleCache
 from src.data_fetcher import DataFetcher
 from src.logger import get_logger, setup_logging
 
@@ -29,6 +30,8 @@ def main() -> None:
                         help="Comma-separated subset of the watchlist (default: full watchlist)")
     parser.add_argument("--window", type=int, default=60,
                         help="Rolling candle window passed to the strategy per evaluation")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Bypass the on-disk candle cache")
     args = parser.parse_args()
 
     load_dotenv(dotenv_path=os.path.join("config", ".env"))
@@ -50,10 +53,19 @@ def main() -> None:
         print("ERROR: could not load instrument tokens")
         sys.exit(1)
 
+    cache = CandleCache()
+    interval = cfg["trading"]["timeframe"]
+
+    def _fetch(sym):
+        if args.no_cache:
+            return fetcher.get_candles(sym, lookback_days=args.days)
+        return cache.get_or_fetch(sym, interval, args.days,
+                                  lambda: fetcher.get_candles(sym, lookback_days=args.days))
+
     print(f"Fetching {args.days}d of 5-min candles for {len(symbols)} symbols...")
     candles = {}
     for sym in symbols:
-        df = fetcher.get_candles(sym, lookback_days=args.days)
+        df = _fetch(sym)
         if df is not None and not df.empty:
             candles[sym] = df
         else:
@@ -65,7 +77,7 @@ def main() -> None:
 
     index_candles = None
     if regime_on:
-        index_candles = fetcher.get_candles(index_symbol, lookback_days=args.days)
+        index_candles = _fetch(index_symbol)
         if index_candles is None:
             print(f"  WARNING: no index data for {index_symbol} — regime filter off")
 
