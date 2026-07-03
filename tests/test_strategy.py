@@ -102,3 +102,44 @@ def test_signal_sl_target_ratio(cfg):
         reward = signal.target - signal.entry_price
         risk = signal.entry_price - signal.stop_loss
         assert reward / risk >= cfg["stop_loss_pct"] / cfg["stop_loss_pct"]
+
+
+# ── market_regime (SCRUM-67) ─────────────────────────────────────────────────
+
+import pandas as pd
+from src.strategy import market_regime
+
+
+def _index_df(closes):
+    return pd.DataFrame({
+        "open": closes, "high": [c + 5 for c in closes],
+        "low": [c - 5 for c in closes], "close": closes,
+        "volume": [1000] * len(closes),
+    })
+
+
+_REGIME_CFG = {"regime_ema": 20, "regime_band_pct": 0.1}
+
+
+def test_regime_bullish_when_price_above_ema():
+    closes = [22000 + i * 20 for i in range(40)]  # steady uptrend
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "BULLISH"
+
+
+def test_regime_bearish_when_price_below_ema():
+    closes = [23000 - i * 20 for i in range(40)]  # steady downtrend
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "BEARISH"
+
+
+def test_regime_neutral_when_flat():
+    closes = [22000.0] * 40  # dead flat — close == ema
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "NEUTRAL"
+
+
+def test_regime_neutral_when_insufficient_data():
+    closes = [22000 + i * 20 for i in range(10)]  # fewer than ema+5 rows
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "NEUTRAL"
+
+
+def test_regime_neutral_when_df_none():
+    assert market_regime(None, _REGIME_CFG) == "NEUTRAL"

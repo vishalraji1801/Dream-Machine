@@ -735,6 +735,115 @@ def test_scan_skips_symbol_with_wide_spread():
     assert "TCS" in called_symbols           # no depth data — allowed
 
 
+# ── Entry time window (SCRUM-68) ──────────────────────────────────────────────
+
+def _at_time(hour, minute):
+    """Patch main.datetime so now() returns the given wall-clock time."""
+    fake_now = MagicMock()
+    fake_now.time.return_value = datetime(2026, 7, 3, hour, minute).time()
+    dt = MagicMock(wraps=datetime)
+    dt.now.return_value = fake_now
+    return patch("main.datetime", dt)
+
+
+def test_entry_window_open_inside():
+    cfg = {"trading": {"entry_start_time": "09:45", "entry_end_time": "14:30"}}
+    with _at_time(11, 0):
+        assert main._within_entry_window(cfg) is True
+
+
+def test_entry_window_closed_before_start():
+    cfg = {"trading": {"entry_start_time": "09:45", "entry_end_time": "14:30"}}
+    with _at_time(9, 20):
+        assert main._within_entry_window(cfg) is False
+
+
+def test_entry_window_closed_after_end():
+    cfg = {"trading": {"entry_start_time": "09:45", "entry_end_time": "14:30"}}
+    with _at_time(15, 0):
+        assert main._within_entry_window(cfg) is False
+
+
+def test_entry_window_always_open_when_unconfigured():
+    cfg = {"trading": {}}
+    assert main._within_entry_window(cfg) is True
+
+
+def test_scan_skips_entries_outside_window():
+    ctx = _make_ctx(quotes={"RELIANCE": {"ltp": 2850.0}})
+    ctx["cfg"]["trading"]["entry_start_time"] = "09:45"
+    ctx["cfg"]["trading"]["entry_end_time"] = "14:30"
+    with _at_time(15, 0):
+        main._scan_entries(ctx)
+    ctx["fetcher"].get_quotes.assert_not_called()
+
+
+# ── Market regime filter (SCRUM-67) ───────────────────────────────────────────
+
+def test_get_regime_none_when_disabled():
+    ctx = _make_ctx()
+    assert main._get_regime(ctx) is None
+
+
+def test_get_regime_none_when_index_data_unavailable():
+    ctx = _make_ctx()
+    ctx["cfg"]["strategy"]["regime_filter_enabled"] = True
+    ctx["fetcher"].get_candles.return_value = None
+    assert main._get_regime(ctx) is None  # fail-open
+
+
+def test_get_regime_returns_market_regime():
+    import pandas as pd
+    ctx = _make_ctx()
+    ctx["cfg"]["strategy"]["regime_filter_enabled"] = True
+    ctx["fetcher"].get_candles.return_value = pd.DataFrame({"close": [1.0]})
+    with patch("main.market_regime", return_value="BULLISH"):
+        assert main._get_regime(ctx) == "BULLISH"
+
+
+def test_scan_no_entries_in_neutral_regime():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["cfg"]["strategy"]["regime_filter_enabled"] = True
+    with patch("main._get_regime", return_value="NEUTRAL"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]) as mock_gen:
+        main._scan_entries(ctx)
+    mock_gen.assert_not_called()
+    ctx["executor"].place_order.assert_not_called()
+
+
+def test_scan_blocks_buy_signal_in_bearish_regime():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BEARISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["executor"].place_order.assert_not_called()
+
+
+def test_scan_allows_buy_signal_in_bullish_regime():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BULLISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["executor"].place_order.assert_called_once()
+
+
 # ── Crash recovery (state store) ──────────────────────────────────────────────
 
 def test_save_state_passes_counters_and_positions():

@@ -23,7 +23,7 @@ from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
 from src.state_store import StateStore
-from src.strategy import generate_signal
+from src.strategy import generate_signal, market_regime
 from src.telegram_controller import TelegramController
 from src.trade_ledger import TradeLedger
 
@@ -59,7 +59,9 @@ def startup() -> dict:
     )
 
     fetcher = DataFetcher(kite, cfg)
-    symbols = cfg["trading"]["watchlist"]
+    symbols = list(cfg["trading"]["watchlist"])
+    if cfg["strategy"].get("regime_filter_enabled"):
+        symbols.append(cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
     if not fetcher.load_instruments(symbols):
         raise RuntimeError("Instrument load failed — cannot start without token map")
 
@@ -150,6 +152,10 @@ def _scan_entries(ctx: dict) -> None:
     positions = ctx["positions"]
     fetcher = ctx["fetcher"]
 
+    if not _within_entry_window(cfg):
+        logger.info("Outside entry window — managing positions only")
+        return
+
     watchlist = cfg["trading"]["watchlist"]
     open_symbols = {p.symbol for p in positions.get_open_positions()}
     candidates = [s for s in watchlist if s not in open_symbols]
@@ -159,6 +165,11 @@ def _scan_entries(ctx: dict) -> None:
     quotes = _get_quotes(ctx, candidates)
     if quotes is None:
         logger.warning("Skipping entry scan — quote fetch failed")
+        return
+
+    regime = _get_regime(ctx)
+    if regime == "NEUTRAL":
+        logger.info("Market regime NEUTRAL — no entries this cycle")
         return
 
     margin = _get_margin(ctx)
@@ -174,6 +185,10 @@ def _scan_entries(ctx: dict) -> None:
         signal = generate_signal(symbol, df, cfg["strategy"])
         if signal.direction == "HOLD":
             continue
+        if regime and ((signal.direction == "BUY" and regime != "BULLISH")
+                       or (signal.direction == "SELL" and regime != "BEARISH")):
+            logger.info(f"{symbol}: {signal.direction} signal against {regime} regime — skipped")
+            continue
         ctx["alert"].send("signal_generated", direction=signal.direction, symbol=symbol,
                           entry=signal.entry_price, sl=signal.stop_loss, target=signal.target)
         qty = risk.calculate_quantity(signal.entry_price, signal.stop_loss)
@@ -186,6 +201,35 @@ def _scan_entries(ctx: dict) -> None:
             continue
         _execute_entry(ctx, symbol, signal, qty)
         break  # one entry per cycle to stay within position limits
+
+
+def _within_entry_window(cfg: dict) -> bool:
+    """No new entries outside [entry_start_time, entry_end_time] (SCRUM-68).
+    Window applies only when both keys are configured."""
+    t = cfg["trading"]
+    start, end = t.get("entry_start_time"), t.get("entry_end_time")
+    if not start or not end:
+        return True
+    from datetime import time as dtime
+    parse = lambda s: dtime(*map(int, s.split(":")))
+    return parse(start) <= datetime.now().time() <= parse(end)
+
+
+def _get_regime(ctx: dict):
+    """NIFTY trend gate for entries (SCRUM-67).
+    Returns BULLISH/BEARISH/NEUTRAL, or None when the filter is disabled or
+    index data is unavailable (fail-open: filter off, entries allowed)."""
+    cfg = ctx["cfg"]
+    if not cfg["strategy"].get("regime_filter_enabled"):
+        return None
+    index_symbol = cfg["strategy"].get("regime_index_symbol", "NIFTY 50")
+    df = ctx["fetcher"].get_candles(index_symbol)
+    if df is None or df.empty:
+        logger.warning("Regime filter: index candles unavailable — filter skipped")
+        return None
+    regime = market_regime(df, cfg["strategy"])
+    logger.info(f"Market regime: {regime}")
+    return regime
 
 
 def _spread_ok(symbol: str, quote: dict, cfg: dict) -> bool:

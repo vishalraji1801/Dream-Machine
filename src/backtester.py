@@ -21,7 +21,7 @@ import pandas as pd
 
 from src.costs import estimate_intraday_costs, trade_leg_values
 from src.logger import get_logger
-from src.strategy import generate_signal
+from src.strategy import generate_signal, market_regime
 
 logger = get_logger("backtester")
 
@@ -109,18 +109,33 @@ class Backtester:
         h, m = map(int, cfg["trading"]["square_off_time"].split(":"))
         self._square_off = dtime(h, m)
 
+        def _parse(key):
+            v = cfg["trading"].get(key)
+            return dtime(*map(int, v.split(":"))) if v else None
+        self._entry_start = _parse("entry_start_time")
+        self._entry_end = _parse("entry_end_time")
+
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def run(self, candles: dict[str, pd.DataFrame]) -> BacktestResult:
+    def run(self, candles: dict[str, pd.DataFrame],
+            index_candles: Optional[pd.DataFrame] = None) -> BacktestResult:
         """
         candles: {symbol: DataFrame[timestamp, open, high, low, close, volume]},
-        each sorted chronologically. Returns aggregated BacktestResult.
+        each sorted chronologically. index_candles: optional index (e.g. NIFTY 50)
+        candles for the regime filter — applied only when regime_filter_enabled.
+        Returns aggregated BacktestResult.
         """
         indexed = {
             sym: {row.timestamp: i for i, row in enumerate(df.itertuples())}
             for sym, df in candles.items()
         }
         timestamps = sorted({ts for m in indexed.values() for ts in m})
+
+        regime_on = (self._strategy_cfg.get("regime_filter_enabled")
+                     and index_candles is not None and not index_candles.empty)
+        idx_map = ({row.timestamp: i for i, row in enumerate(index_candles.itertuples())}
+                   if regime_on else {})
+        regime = None  # last computed regime, carried forward between index candles
 
         trades: list[BacktestTrade] = []
         open_pos: dict[str, _OpenPosition] = {}
@@ -172,6 +187,14 @@ class Backtester:
             # 4. Entry scan — one entry per cycle, mirrors live _scan_entries
             if halted or len(open_pos) >= self._r["max_open_positions"]:
                 continue
+            if self._entry_start and not (self._entry_start <= ts.time() <= self._entry_end):
+                continue  # outside entry window — positions still managed above
+            if regime_on and ts in idx_map:
+                i = idx_map[ts]
+                idx_win = index_candles.iloc[max(0, i + 1 - self._window): i + 1]
+                regime = market_regime(idx_win, self._strategy_cfg)
+            if regime == "NEUTRAL":
+                continue
             for sym, df in candles.items():
                 if sym in open_pos or ts not in indexed[sym]:
                     continue
@@ -179,6 +202,9 @@ class Backtester:
                 win_df = df.iloc[max(0, i + 1 - self._window): i + 1]
                 signal = generate_signal(sym, win_df, self._strategy_cfg)
                 if signal.direction == "HOLD":
+                    continue
+                if regime and ((signal.direction == "BUY" and regime != "BULLISH")
+                               or (signal.direction == "SELL" and regime != "BEARISH")):
                     continue
                 qty = self._calculate_quantity(signal.entry_price, signal.stop_loss)
                 if qty <= 0:
