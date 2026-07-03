@@ -391,6 +391,7 @@ def test_run_exits_cleanly_on_keyboard_interrupt():
          patch("main.trading_cycle"), \
          patch("main.eod_square_off") as mock_eod, \
          patch("main._send_daily_summary") as mock_summary, \
+         patch("main.TelegramController", return_value=MagicMock()), \
          patch("main.time.sleep", side_effect=KeyboardInterrupt):
         main.run()  # should not raise
 
@@ -413,6 +414,7 @@ def test_run_calls_eod_square_off_at_square_off_time():
          patch("main.trading_cycle"), \
          patch("main.eod_square_off") as mock_eod, \
          patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
          patch("main.time.sleep", side_effect=_sleep_then_stop):
         main.run()
 
@@ -428,10 +430,100 @@ def test_run_disconnects_streamer_on_shutdown():
          patch("main.trading_cycle"), \
          patch("main.eod_square_off"), \
          patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
          patch("main.time.sleep", side_effect=KeyboardInterrupt):
         main.run()
 
     ctx["streamer"].disconnect.assert_called_once()
+
+
+def test_run_sends_bot_stopped_alert_on_shutdown():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = False
+
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=KeyboardInterrupt):
+        main.run()
+
+    ctx["alert"].send.assert_any_call("bot_stopped", reason="keyboard interrupt")
+
+
+def test_run_sends_critical_error_on_unhandled_exception():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = True
+
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle", side_effect=RuntimeError("boom")), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.TelegramController", return_value=MagicMock()):
+        main.run()
+
+    ctx["alert"].send.assert_any_call("critical_error", module="main", message="boom")
+
+
+def test_run_stop_event_exits_loop():
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = True
+    call_count = {"n": 0}
+
+    def _cycle_then_stop(c):
+        call_count["n"] += 1
+
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle", side_effect=_cycle_then_stop), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary"), \
+         patch("main.time.sleep") as mock_sleep:
+        mock_ctrl = MagicMock()
+        def _start_and_stop_bot():
+            # Simulate /stop received after first cycle
+            import threading
+            stop_event_ref = {"e": None}
+            original_tc = main.TelegramController
+
+            def fake_tc(bot_token, chat_id, stop_event, status_fn=None):
+                stop_event_ref["e"] = stop_event
+                m = MagicMock()
+                m.start = lambda: stop_event.set()  # set immediately
+                m.stop = MagicMock()
+                return m
+
+            with patch("main.TelegramController", side_effect=fake_tc):
+                main.run()
+
+        _start_and_stop_bot()
+
+    # Loop should have exited without KeyboardInterrupt
+    assert call_count["n"] == 0  # stop_event set before first cycle
+
+
+# ── signal_generated alert ────────────────────────────────────────────────────
+
+def test_scan_sends_signal_generated_alert_on_buy():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+        pre_trade_ok=True,
+    )
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["alert"].send.assert_any_call(
+        "signal_generated",
+        direction="BUY",
+        symbol="RELIANCE",
+        entry=ctx["_mock_signal"].entry_price,
+        sl=ctx["_mock_signal"].stop_loss,
+        target=ctx["_mock_signal"].target,
+    )
 
 
 # ── KiteTicker / streamer integration ────────────────────────────────────────

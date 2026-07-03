@@ -4,6 +4,7 @@ Startup validation, trading cycle orchestration, EOD square-off, graceful shutdo
 """
 import os
 import signal
+import threading
 import time
 
 import yaml
@@ -19,6 +20,7 @@ from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
 from src.strategy import generate_signal
+from src.telegram_controller import TelegramController
 
 logger = get_logger("main")
 
@@ -153,6 +155,8 @@ def _scan_entries(ctx: dict) -> None:
         signal = generate_signal(symbol, df, cfg["strategy"])
         if signal.direction == "HOLD":
             continue
+        ctx["alert"].send("signal_generated", direction=signal.direction, symbol=symbol,
+                          entry=signal.entry_price, sl=signal.stop_loss, target=signal.target)
         qty = risk.calculate_quantity(signal.entry_price, signal.stop_loss)
         if qty <= 0:
             continue
@@ -319,20 +323,45 @@ def run() -> None:
     cfg = ctx["cfg"]
     risk = ctx["risk"]
     positions = ctx["positions"]
+    alert = ctx["alert"]
     interval = cfg["scheduler"]["cycle_interval_seconds"]
 
-    ctx["alert"].send("bot_started", minutes=0)
+    alert.send("bot_started", minutes=0)
 
+    stop_event = threading.Event()
     shutdown = {"requested": False}
 
     def _on_sigterm(*_):
         shutdown["requested"] = True
+        stop_event.set()
         logger.info("SIGTERM received — shutting down after this cycle")
 
     signal.signal(signal.SIGTERM, _on_sigterm)
 
+    def _status_message() -> str:
+        open_pos = positions.get_open_positions()
+        pos_lines = "\n".join(
+            f"  {p.symbol} {p.direction} @ {p.entry_price:.2f} | SL={p.stop_loss:.2f} | Target={p.target:.2f}"
+            for p in open_pos
+        ) or "  None"
+        return (
+            f"Bot Status\n"
+            f"Open positions ({len(open_pos)}):\n{pos_lines}\n"
+            f"Daily P&L: Rs.{risk._daily_pnl:.2f}\n"
+            f"Trades today: {risk._trades_today}"
+        )
+
+    controller = TelegramController(
+        bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
+        chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        stop_event=stop_event,
+        status_fn=_status_message,
+    )
+    controller.start()
+
+    stop_reason = "normal shutdown"
     try:
-        while not shutdown["requested"]:
+        while not shutdown["requested"] and not stop_event.is_set():
             if not risk.is_market_open():
                 if positions.is_square_off_time():
                     eod_square_off(ctx)
@@ -343,12 +372,19 @@ def run() -> None:
             trading_cycle(ctx)
             time.sleep(interval)
     except KeyboardInterrupt:
+        stop_reason = "keyboard interrupt"
         logger.info("KeyboardInterrupt — initiating shutdown")
+    except Exception as exc:
+        stop_reason = f"unhandled exception: {exc}"
+        logger.critical(f"Unhandled exception in main loop: {exc}", exc_info=True)
+        alert.send("critical_error", module="main", message=str(exc))
     finally:
         eod_square_off(ctx)
         _send_daily_summary(ctx)
+        alert.send("bot_stopped", reason=stop_reason)
         if "streamer" in ctx:
             ctx["streamer"].disconnect()
+        controller.stop()
         logger.info("Bot shutdown complete")
 
 

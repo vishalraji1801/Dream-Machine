@@ -8,15 +8,18 @@ from src.logger import get_logger
 logger = get_logger("alert_manager")
 
 _TEMPLATES = {
-    "bot_started":      "Trading Bot ONLINE\nMarket opens in {minutes} minutes.",
-    "order_placed":     "{direction} | {symbol} | Qty: {qty} | Price: {price} | Order ID: {order_id}",
-    "order_filled":     "Order FILLED | {symbol} | Actual Price: {actual_price} | Slippage: {slippage}",
-    "order_rejected":   "ALERT: Order REJECTED | {symbol} | Reason: {reason}",
-    "sl_hit":           "SL Hit | {symbol} | Entry: {entry} | Exit: {exit_price} | Loss: Rs.{loss}",
-    "target_hit":       "Target Hit | {symbol} | Entry: {entry} | Exit: {exit_price} | Profit: Rs.{profit}",
-    "circuit_breaker":  "HALT: {reason}. All positions squared off.",
-    "critical_error":   "ERROR: [{module}] - {message}. Check logs immediately.",
-    "daily_summary":    "EOD Report | Trades: {trades} | Profit: Rs.{profit} | Loss: Rs.{loss} | Net P&L: Rs.{net_pnl}",
+    "bot_started":        "Trading Bot ONLINE\nMarket opens in {minutes} minutes.",
+    "order_placed":       "{direction} | {symbol} | Qty: {qty} | Price: {price} | Order ID: {order_id}",
+    "order_filled":       "Order FILLED | {symbol} | Actual Price: {actual_price} | Slippage: {slippage}",
+    "order_rejected":     "ALERT: Order REJECTED | {symbol} | Reason: {reason}",
+    "sl_hit":             "SL Hit | {symbol} | Entry: {entry} | Exit: {exit_price} | Loss: Rs.{loss}",
+    "target_hit":         "Target Hit | {symbol} | Entry: {entry} | Exit: {exit_price} | Profit: Rs.{profit}",
+    "circuit_breaker":    "HALT: {reason}. All positions squared off.",
+    "critical_error":     "ERROR: [{module}] {message}. Check logs immediately.",
+    "daily_summary":      "EOD Report | Trades: {trades} | Profit: Rs.{profit} | Loss: Rs.{loss} | Net P&L: Rs.{net_pnl}",
+    "signal_generated":   "Signal: {direction} {symbol} | Entry: {entry} | SL: {sl} | Target: {target}",
+    "bot_stopped":        "Trading Bot OFFLINE. Reason: {reason}",
+    "api_error":          "API ERROR: [{module}] {message}. Bot will retry.",
 }
 
 
