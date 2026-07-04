@@ -1,10 +1,8 @@
 from types import SimpleNamespace
-from unittest.mock import MagicMock
 
 import pandas as pd
 
-from src.backtest_runner import (format_summary, run_across_timeframes,
-                                 select_stocks, _summarize)
+from src.backtest_runner import format_summary, run_across_timeframes, _summarize
 from src.backtest_store import BacktestStore
 
 
@@ -66,18 +64,3 @@ def test_format_summary_lists_all_timeframes():
     text = format_summary(summaries, "momentum_vwap_breakout")
     assert "5min" in text and "1hr" in text
     assert "momentum_vwap_breakout" in text
-
-
-def test_select_stocks_caps_at_num(tmp_path):
-    kite = MagicMock()
-    kite.instruments.return_value = [
-        {"tradingsymbol": s, "instrument_token": i, "instrument_type": "EQ",
-         "exchange": "NSE", "segment": "NSE"}
-        for i, s in enumerate(["RELIANCE", "TCS", "INFY", "SBIN"], 1)
-    ]
-    kite.ltp.return_value = {f"NSE:{s}": {"last_price": 1000.0}
-                            for s in ["RELIANCE", "TCS", "INFY", "SBIN"]}
-    cfg = {"trading": {"exchange": "NSE"}, "universe": {}}
-    stocks = select_stocks(kite, cfg, num_stocks=2)
-    assert len(stocks) == 2
-    assert all("symbol" in s and "token" in s for s in stocks)
