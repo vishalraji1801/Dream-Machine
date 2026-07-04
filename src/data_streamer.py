@@ -4,6 +4,7 @@ Wraps KiteTicker WebSocket to stream real-time ticks for all watchlist instrumen
 Falls back gracefully — callers check is_connected before using get_latest_quotes().
 """
 import threading
+import time
 from typing import Optional
 
 from kiteconnect import KiteTicker
@@ -19,14 +20,19 @@ class DataStreamer:
     Runs in a background thread; thread-safe tick buffer.
     """
 
-    def __init__(self, api_key: str, access_token: str, instruments: dict[str, int]):
+    def __init__(self, api_key: str, access_token: str, instruments: dict[str, int],
+                 max_tick_age_seconds: float = 0.0):
         """
         instruments: {symbol: instrument_token} map (from DataFetcher._instruments).
+        max_tick_age_seconds: if > 0, a buffered tick older than this is treated as
+        no-data (stale-tick guard) so the bot never trades on a frozen feed.
         """
         self._ticker = KiteTicker(api_key, access_token)
         self._symbol_to_token = instruments
         self._token_to_symbol = {v: k for k, v in instruments.items()}
         self._ticks: dict[int, dict] = {}
+        self._tick_time: dict[int, float] = {}
+        self._max_tick_age = max_tick_age_seconds
         self._connected = False
         self._lock = threading.Lock()
 
@@ -62,6 +68,7 @@ class DataStreamer:
         """
         if not self._connected:
             return None
+        now = time.time()
         with self._lock:
             quotes = {}
             for symbol in symbols:
@@ -71,6 +78,11 @@ class DataStreamer:
                 tick = self._ticks.get(token)
                 if tick is None:
                     continue
+                if self._max_tick_age > 0:
+                    age = now - self._tick_time.get(token, 0.0)
+                    if age > self._max_tick_age:
+                        logger.warning(f"{symbol}: stale tick ({age:.0f}s old) — skipped")
+                        continue
                 ohlc = tick.get("ohlc", {})
                 quotes[symbol] = {
                     "ltp":    tick.get("last_price", 0.0),
@@ -92,9 +104,12 @@ class DataStreamer:
         logger.info(f"KiteTicker subscribed to {len(tokens)} instruments in MODE_QUOTE")
 
     def _on_ticks(self, ws, ticks):
+        now = time.time()
         with self._lock:
             for tick in ticks:
-                self._ticks[tick["instrument_token"]] = tick
+                token = tick["instrument_token"]
+                self._ticks[token] = tick
+                self._tick_time[token] = now
 
     def _on_close(self, ws, code, reason):
         self._connected = False

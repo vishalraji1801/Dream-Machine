@@ -24,3 +24,6 @@ Thumbs.db
 
 # Backtest candle cache
 data_cache/
+
+# AI runtime-written files (Claude overwrites these; do not track)
+config/ai_overlay.yaml

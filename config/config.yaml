@@ -107,6 +107,18 @@ costs:
 scheduler:
   cycle_interval_seconds: 300
   heartbeat_interval_minutes: 60
+  max_tick_age_seconds: 30   # treat a streamed tick older than this as no-data
+
+ai:
+  overlay_enabled: true                      # apply a validated AI overlay at startup
+  overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist
+  telegram_outbox: "logs/telegram_outbox.txt"  # AI writes here; the bot relays to Telegram
+  # Hard bounds the overlay can never exceed (the safety sandbox):
+  allowed_strategies: ["momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend"]
+  min_stop_loss_pct: 0.5
+  max_stop_loss_pct: 2.0
+  min_target_pct: 0.5
+  max_target_pct: 5.0
 
 logging:
   level: INFO
