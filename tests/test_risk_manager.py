@@ -142,3 +142,55 @@ def test_restored_counters_feed_circuit_breakers(rm):
     ok, reason = rm.check_circuit_breakers()
     assert ok is False
     assert "loss" in reason.lower()
+
+
+# ── V2 P6: kill switch & sector cap ───────────────────────────────────────────
+
+def test_kill_switch_halts_on_giveback(cfg):
+    cfg["risk"]["max_giveback_from_peak"] = 500
+    rm = RiskManager(cfg)
+    rm.record_pnl(1000.0)   # peak = 1000
+    rm.record_pnl(-600.0)   # daily = 400, gave back 600 >= 500
+    ok, reason = rm.check_circuit_breakers()
+    assert ok is False
+    assert "kill switch" in reason.lower()
+
+
+def test_kill_switch_not_triggered_within_limit(cfg):
+    cfg["risk"]["max_giveback_from_peak"] = 500
+    rm = RiskManager(cfg)
+    rm.record_pnl(1000.0)
+    rm.record_pnl(-300.0)   # gave back only 300 < 500
+    ok, _ = rm.check_circuit_breakers()
+    assert ok is True
+
+
+def test_kill_switch_disabled_when_zero(cfg):
+    cfg["risk"]["max_giveback_from_peak"] = 0
+    rm = RiskManager(cfg)
+    rm.record_pnl(1000.0)
+    rm.record_pnl(-900.0)
+    ok, _ = rm.check_circuit_breakers()
+    assert ok is True
+
+
+def test_sector_cap_blocks_third_bank(cfg):
+    cfg["risk"]["max_positions_per_sector"] = 2
+    cfg["sectors"] = {"HDFCBANK": "BANK", "ICICIBANK": "BANK", "SBIN": "BANK"}
+    rm = RiskManager(cfg)
+    ok, reason = rm.check_sector_cap("SBIN", ["HDFCBANK", "ICICIBANK"])
+    assert ok is False
+    assert "BANK" in reason
+
+
+def test_sector_cap_allows_within_limit(cfg):
+    cfg["risk"]["max_positions_per_sector"] = 2
+    cfg["sectors"] = {"HDFCBANK": "BANK", "ICICIBANK": "BANK", "TCS": "IT"}
+    rm = RiskManager(cfg)
+    assert rm.check_sector_cap("ICICIBANK", ["HDFCBANK"])[0] is True
+    assert rm.check_sector_cap("TCS", ["HDFCBANK", "ICICIBANK"])[0] is True
+
+
+def test_sector_cap_disabled_without_config(cfg):
+    rm = RiskManager(cfg)  # no max_positions_per_sector, no sectors
+    assert rm.check_sector_cap("SBIN", ["HDFCBANK", "ICICIBANK"])[0] is True
