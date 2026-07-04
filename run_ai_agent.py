@@ -24,6 +24,7 @@ AGENTS = {
     "premarket":  {"prompt": "ai/prompts/premarket_strategist.md", "tools": "Read,Write,Bash"},
     "postmarket": {"prompt": "ai/prompts/postmarket_analyst.md",   "tools": "Read,Write,Bash"},
     "weekly":     {"prompt": "ai/prompts/weekly_researcher.md",    "tools": "Read,Write,Bash"},
+    "backtest":   {"prompt": "ai/prompts/backtest_analyst.md",     "tools": "Read,Write,Bash"},
 }
 
 
