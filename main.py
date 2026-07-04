@@ -25,8 +25,10 @@ from src.order_executor import OrderExecutor
 from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
+from src.scanner import rank as scanner_rank
 from src.state_store import StateStore
 from src.strategy import generate_signal, market_regime
+from src.universe_builder import UniverseBuilder
 from src.telegram_controller import TelegramController
 from src.trade_db import TradeDB
 from src.trade_ledger import TradeLedger
@@ -81,6 +83,20 @@ def startup() -> dict:
 
     fetcher = DataFetcher(kite, cfg)
     symbols = list(cfg["trading"]["watchlist"])
+
+    # Dynamic universe (V2 P3) — opt-in. Loads today's pre-built universe file
+    # and streams the whole set; falls back to the watchlist if absent.
+    universe_symbols = None
+    if cfg.get("universe", {}).get("enabled"):
+        loaded = UniverseBuilder(cfg).load_today()
+        if loaded:
+            universe_symbols = [r["symbol"] for r in loaded]
+            symbols = list(dict.fromkeys(universe_symbols + symbols))
+            logger.info(f"Dynamic universe active: {len(universe_symbols)} symbols")
+        else:
+            logger.warning("universe.enabled but no universe file today — using watchlist. "
+                           "Run build_universe.py pre-market.")
+
     if cfg["strategy"].get("regime_filter_enabled"):
         symbols.append(cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
     if not fetcher.load_instruments(symbols):
@@ -113,6 +129,7 @@ def startup() -> dict:
         "state": StateStore(os.path.join("logs", f"bot_state{_profile_suffix()}.json")),
         "calendar": MarketCalendar(cfg),
         "events": EventCalendar(cfg),
+        "universe_symbols": universe_symbols,
     }
 
     saved = ctx["state"].load()
@@ -260,18 +277,31 @@ def _scan_entries(ctx: dict) -> None:
         logger.info("Market event day — no entries today")
         return
 
-    watchlist = cfg["trading"]["watchlist"]
+    universe_on = cfg.get("universe", {}).get("enabled", False)
+    base_symbols = (ctx.get("universe_symbols") or cfg["trading"]["watchlist"]) \
+        if universe_on else cfg["trading"]["watchlist"]
     open_symbols = {p.symbol for p in positions.get_open_positions()}
-    candidates = [s for s in watchlist if s not in open_symbols]
+    pool = [s for s in base_symbols if s not in open_symbols]
     if events:
-        candidates = [s for s in candidates if not events.symbol_has_event(s)]
-    if not candidates:
+        pool = [s for s in pool if not events.symbol_has_event(s)]
+    if not pool:
         return
 
-    quotes = _get_quotes(ctx, candidates)
+    quotes = _get_quotes(ctx, pool)
     if quotes is None:
         logger.warning("Skipping entry scan — quote fetch failed")
         return
+
+    # Dynamic scanner (V2 P3): rank the pool, trade the top-N. Falls through to
+    # the full pool when the universe is disabled.
+    if universe_on:
+        ranked = scanner_rank({s: {**quotes[s], "symbol": s} for s in quotes}, cfg)
+        if ctx.get("db"):
+            ctx["db"].record_scan(ranked)
+        candidates = [r["symbol"] for r in ranked]
+        logger.info(f"Scanner shortlist: {len(candidates)} of {len(pool)} names")
+    else:
+        candidates = pool
 
     regime = _get_regime(ctx)
     if regime == "NEUTRAL":

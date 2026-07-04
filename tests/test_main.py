@@ -819,6 +819,42 @@ def test_run_idles_on_holiday():
     ctx["risk"].is_market_open.assert_not_called()  # calendar short-circuits
 
 
+# ── V2 P3: dynamic universe scanner hook ──────────────────────────────────────
+
+def test_scan_uses_scanner_shortlist_when_universe_enabled():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"AAA": {"ltp": 108.0, "close": 100.0, "high": 109.0, "low": 99.0, "open": 100.0},
+                "BBB": {"ltp": 101.0, "close": 100.0, "high": 102.0, "low": 99.0, "open": 100.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="HOLD",
+    )
+    ctx["cfg"]["universe"] = {"enabled": True}
+    ctx["cfg"]["scanner"] = {"top_n": 1, "w_pct_change": 1.0, "w_range_pos": 2.0, "w_gap": 0.5}
+    ctx["universe_symbols"] = ["AAA", "BBB"]
+    with patch("main._get_regime", return_value="BULLISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]) as mock_gen:
+        main._scan_entries(ctx)
+    ctx["db"].record_scan.assert_called_once()
+    # only the top-ranked symbol (AAA, the bigger mover) is evaluated
+    called = [c.args[0] for c in mock_gen.call_args_list]
+    assert called == ["AAA"]
+
+
+def test_scan_uses_watchlist_when_universe_disabled():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="HOLD",
+    )
+    # no universe section -> disabled
+    with patch("main._get_regime", return_value="BULLISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["db"].record_scan.assert_not_called()
+
+
 # ── V2 P6: event calendar & sector cap ────────────────────────────────────────
 
 def test_scan_skips_all_on_market_event_day():
