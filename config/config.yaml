@@ -148,6 +148,21 @@ paper_trading:
   simulated_slippage_pct: 0.05  # 0.05% slippage applied to simulated fills
   realistic_fills: true   # LIMIT orders fill only when live price crosses the limit
 
+universe:
+  enabled: false          # OPT-IN (V2 P3): when true, scan a dynamic universe
+                          # instead of the fixed watchlist. Needs a live-market
+                          # paper run to validate before use.
+  price_min: 100
+  price_max: 5000
+  fno_underlyings: []     # optional whitelist of liquid MIS-friendly names
+  exclude: []             # symbols to always exclude (F&O ban-list, etc.)
+
+scanner:
+  top_n: 30               # candidates handed to the strategy engine each cycle
+  w_pct_change: 1.0
+  w_range_pos: 2.0
+  w_gap: 0.5
+
 events:
   path: "config/events.yaml"   # market-wide + per-stock event days to skip
 
