@@ -82,3 +82,34 @@ def test_format_sweep_report_handles_inf_profit_factor():
                 "profit_factor": float("inf"), "max_drawdown": 0.0, "trades": 2}]
     report = format_sweep_report(results)
     assert "inf" in report
+
+
+# ── V2 P6: walk-forward validation ────────────────────────────────────────────
+
+from src.param_sweep import walk_forward
+import pandas as pd
+
+
+def test_walk_forward_optimizes_in_sample_then_verifies_oos(base_cfg):
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-06-01 09:15", periods=20, freq="5min"),
+        "open": [1.0] * 20, "high": [1.0] * 20, "low": [1.0] * 20,
+        "close": [1.0] * 20, "volume": [1] * 20,
+    })
+    candles = {"X": df}
+    grid = [{"rsi_entry_threshold": 55}, {"rsi_entry_threshold": 60},
+            {"rsi_entry_threshold": 65}]
+    fake = _fake_backtester_cls({55: 100.0, 60: 900.0, 65: 400.0})
+    res = walk_forward(base_cfg, candles, grid, split=0.5, backtester_cls=fake)
+    assert res["best_params"] == {"rsi_entry_threshold": 60}
+    assert res["out_of_sample"]["net_pnl"] == 900.0
+
+
+def test_walk_forward_handles_too_short_data(base_cfg):
+    df = pd.DataFrame({"close": [1.0, 2.0, 3.0], "open": [1.0, 2.0, 3.0],
+                       "high": [1.0, 2.0, 3.0], "low": [1.0, 2.0, 3.0], "volume": [1, 1, 1]})
+    fake = _fake_backtester_cls({60: 0.0})
+    res = walk_forward(base_cfg, {"X": df}, [{"rsi_entry_threshold": 60}],
+                       backtester_cls=fake)
+    # no usable split -> empty in-sample -> graceful result
+    assert "best_params" in res

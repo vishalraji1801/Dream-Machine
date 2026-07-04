@@ -75,6 +75,23 @@ strategy:
   regime_index_symbol: "NIFTY 50"
   regime_ema: 20                # EMA window on 5-min index candles
   regime_band_pct: 0.1          # neutral band around the EMA (%)
+  # ── Strategy portfolio (V2) ──
+  name: momentum_vwap_breakout  # active strategy (AI overlay may switch within whitelist)
+  # SL/target sizing: 'pct' (fixed %) or 'atr' (volatility-adaptive)
+  sl_mode: pct
+  atr_period: 14
+  atr_sl_mult: 1.5              # SL = 1.5 x ATR when sl_mode: atr
+  atr_target_mult: 3.0          # target = 3 x ATR when sl_mode: atr
+  # VWAP mean-reversion params
+  vwap_stretch_pct: 1.5
+  rsi_overbought: 70
+  rsi_oversold: 30
+  # Opening Range Breakout params
+  orb_start: "09:15"
+  orb_end: "09:45"
+  # Supertrend params
+  supertrend_period: 10
+  supertrend_mult: 3.0
 
 risk:
   total_capital: 500000
@@ -93,6 +110,8 @@ risk:
   max_consecutive_api_errors: 3
   min_margin_threshold: 25000
   max_spread_pct: 0.15   # skip entry when bid-ask spread exceeds this % of LTP
+  max_positions_per_sector: 2   # sector cap (V2) — no more than N open per sector
+  max_giveback_from_peak: 5000  # kill switch (V2) — halt if daily P&L falls this far from peak (0=off)
 
 costs:
   enabled: true            # subtract estimated charges from every trade P&L
@@ -128,3 +147,63 @@ paper_trading:
   enabled: true           # Set to false to go live with real orders
   simulated_slippage_pct: 0.05  # 0.05% slippage applied to simulated fills
   realistic_fills: true   # LIMIT orders fill only when live price crosses the limit
+
+events:
+  path: "config/events.yaml"   # market-wide + per-stock event days to skip
+
+backtest:
+  fill_mode: close        # 'close' (signal-candle close) or 'next_open' (honest breakout fills)
+  slippage_pct: 0.0       # extra slippage applied to next_open fills
+
+# Sector map for the sector cap. Symbols not listed are treated as their own sector.
+sectors:
+  RELIANCE: ENERGY
+  BPCL: ENERGY
+  COALINDIA: ENERGY
+  NTPC: ENERGY
+  ONGC: ENERGY
+  POWERGRID: ENERGY
+  TCS: IT
+  INFY: IT
+  HCLTECH: IT
+  WIPRO: IT
+  TECHM: IT
+  HDFCBANK: BANK
+  ICICIBANK: BANK
+  SBIN: BANK
+  KOTAKBANK: BANK
+  AXISBANK: BANK
+  INDUSINDBK: BANK
+  BAJFINANCE: FINSERV
+  BAJAJFINSV: FINSERV
+  HDFCLIFE: FINSERV
+  SBILIFE: FINSERV
+  HINDUNILVR: FMCG
+  ITC: FMCG
+  NESTLEIND: FMCG
+  BRITANNIA: FMCG
+  TATACONSUM: FMCG
+  SUNPHARMA: PHARMA
+  CIPLA: PHARMA
+  DIVISLAB: PHARMA
+  DRREDDY: PHARMA
+  MARUTI: AUTO
+  EICHERMOT: AUTO
+  HEROMOTOCO: AUTO
+  M&M: AUTO
+  TATAMOTORS: AUTO
+  BAJAJ-AUTO: AUTO
+  HINDALCO: METAL
+  JSWSTEEL: METAL
+  TATASTEEL: METAL
+  ULTRACEMCO: CEMENT
+  GRASIM: CEMENT
+  SHREECEM: CEMENT
+  ASIANPAINT: CONSUMER
+  TITAN: CONSUMER
+  TRENT: CONSUMER
+  BHARTIARTL: TELECOM
+  LT: INFRA
+  ADANIENT: INFRA
+  ADANIPORTS: INFRA
+  UPL: CHEMICALS

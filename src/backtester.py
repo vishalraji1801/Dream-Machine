@@ -115,6 +115,10 @@ class Backtester:
         self._entry_start = _parse("entry_start_time")
         self._entry_end = _parse("entry_end_time")
 
+        bt = cfg.get("backtest", {})
+        self._fill_mode = bt.get("fill_mode", "close")
+        self._bt_slippage = bt.get("slippage_pct", 0.0)
+
     # ── Public API ────────────────────────────────────────────────────────────
 
     def run(self, candles: dict[str, pd.DataFrame],
@@ -206,18 +210,27 @@ class Backtester:
                 if regime and ((signal.direction == "BUY" and regime != "BULLISH")
                                or (signal.direction == "SELL" and regime != "BEARISH")):
                     continue
-                qty = self._calculate_quantity(signal.entry_price, signal.stop_loss)
+                # Honest fills (SCRUM-82): next-candle open instead of signal close.
+                entry_price = signal.entry_price
+                if self._fill_mode == "next_open":
+                    if i + 1 >= len(df):
+                        continue  # no next candle to fill against
+                    nxt = df.iloc[i + 1]["open"]
+                    slip = self._bt_slippage / 100
+                    entry_price = round(nxt * (1 + slip) if signal.direction == "BUY"
+                                        else nxt * (1 - slip), 2)
+                qty = self._calculate_quantity(entry_price, signal.stop_loss)
                 if qty <= 0:
                     continue
-                order_value = signal.entry_price * qty
+                order_value = entry_price * qty
                 max_pos_value = self._r["total_capital"] * self._r["max_position_size_pct"] / 100
                 if order_value > self._r["order_value_cap"] or order_value > max_pos_value:
                     continue
                 open_pos[sym] = _OpenPosition(
                     symbol=sym, direction=signal.direction, quantity=qty,
-                    entry_price=signal.entry_price, stop_loss=signal.stop_loss,
+                    entry_price=entry_price, stop_loss=signal.stop_loss,
                     target=signal.target, entry_time=ts,
-                    prev_close=signal.entry_price,
+                    prev_close=entry_price,
                 )
                 trades_today += 1
                 break  # one entry per cycle

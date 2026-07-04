@@ -18,6 +18,7 @@ from src.auth import load_kite_session
 from src.costs import estimate_intraday_costs, trade_leg_values
 from src.data_fetcher import DataFetcher
 from src.data_streamer import DataStreamer
+from src.event_calendar import EventCalendar
 from src.logger import get_logger, setup_logging
 from src.market_calendar import MarketCalendar
 from src.order_executor import OrderExecutor
@@ -38,6 +39,13 @@ logger = get_logger("main")
 def load_config() -> dict:
     with open(os.path.join("config", "config.yaml")) as f:
         return yaml.safe_load(f)
+
+
+def _profile_suffix() -> str:
+    """Isolate state/db files per BOT_PROFILE so parallel paper runs (e.g. 5min
+    vs 1hr) don't collide. Empty when BOT_PROFILE is unset."""
+    profile = os.getenv("BOT_PROFILE", "").strip()
+    return f"_{profile}" if profile else ""
 
 
 def startup() -> dict:
@@ -100,10 +108,11 @@ def startup() -> dict:
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
         "ledger": TradeLedger(),
-        "db": TradeDB(),
+        "db": TradeDB(os.path.join("logs", f"trades{_profile_suffix()}.db")),
         "source": "paper" if paper_mode else "live",
-        "state": StateStore(),
+        "state": StateStore(os.path.join("logs", f"bot_state{_profile_suffix()}.json")),
         "calendar": MarketCalendar(cfg),
+        "events": EventCalendar(cfg),
     }
 
     saved = ctx["state"].load()
@@ -246,9 +255,16 @@ def _scan_entries(ctx: dict) -> None:
         logger.info("Outside entry window — managing positions only")
         return
 
+    events = ctx.get("events")
+    if events and events.is_market_event_day():
+        logger.info("Market event day — no entries today")
+        return
+
     watchlist = cfg["trading"]["watchlist"]
     open_symbols = {p.symbol for p in positions.get_open_positions()}
     candidates = [s for s in watchlist if s not in open_symbols]
+    if events:
+        candidates = [s for s in candidates if not events.symbol_has_event(s)]
     if not candidates:
         return
 
@@ -291,6 +307,11 @@ def _scan_entries(ctx: dict) -> None:
         if not ok:
             logger.info(f"Pre-trade blocked for {symbol}: {block_reason}")
             _db_signal(ctx, symbol, signal.direction, taken=False, reason=block_reason)
+            continue
+        sector_ok, sector_reason = risk.check_sector_cap(symbol, list(open_symbols))
+        if not sector_ok:
+            logger.info(f"Sector cap blocked {symbol}: {sector_reason}")
+            _db_signal(ctx, symbol, signal.direction, taken=False, reason=sector_reason)
             continue
         _db_signal(ctx, symbol, signal.direction, taken=True)
         _execute_entry(ctx, symbol, signal, qty)

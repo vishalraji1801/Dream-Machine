@@ -373,3 +373,29 @@ def test_format_report_contains_key_metrics():
     assert "Profit factor" in report
     assert "Max drawdown" in report
     assert "Rs.300" in report  # net pnl
+
+
+# ── V2 P6: honest next-open fills ─────────────────────────────────────────────
+
+def test_next_open_fill_uses_next_candle_open(cfg):
+    cfg["backtest"] = {"fill_mode": "next_open", "slippage_pct": 0.0}
+    candles = {"X": _candles([
+        (100, 100.5, 99.5, 100, 1000),      # signal candle (close 100)
+        (101, 103.0, 100.5, 102.5, 1000),   # next open 101 -> entry; high 103 hits target 102
+    ])}
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
+        result = Backtester(cfg).run(candles)
+    assert result.total_trades == 1
+    assert result.trades[0].entry_price == 101.0   # filled at next open, not close 100
+    assert result.trades[0].exit_reason == "target_hit"
+
+
+def test_close_fill_uses_signal_close(cfg):
+    cfg["backtest"] = {"fill_mode": "close"}
+    candles = {"X": _candles([
+        (100, 100.5, 99.5, 100, 1000),
+        (101, 103.0, 100.5, 102.5, 1000),
+    ])}
+    with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
+        result = Backtester(cfg).run(candles)
+    assert result.trades[0].entry_price == 100.0   # signal-candle close

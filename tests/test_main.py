@@ -49,6 +49,7 @@ def _make_ctx(
     risk = MagicMock()
     risk.check_circuit_breakers.return_value = circuit_breaker
     risk.check_pre_trade.return_value = (pre_trade_ok, "ok" if pre_trade_ok else "blocked")
+    risk.check_sector_cap.return_value = (True, "")
     risk.calculate_quantity.return_value = 10
     risk.is_market_open.return_value = True
     risk._daily_pnl = 500.0
@@ -96,11 +97,16 @@ def _make_ctx(
 
     db = MagicMock()
 
+    events = MagicMock()
+    events.is_market_event_day.return_value = False
+    events.symbol_has_event.return_value = False
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions, "ledger": ledger,
         "state": state, "calendar": calendar, "db": db, "source": "paper",
+        "events": events,
         "_mock_signal": mock_signal,
     }
 
@@ -811,6 +817,47 @@ def test_run_idles_on_holiday():
         main.run()
     mock_cycle.assert_not_called()
     ctx["risk"].is_market_open.assert_not_called()  # calendar short-circuits
+
+
+# ── V2 P6: event calendar & sector cap ────────────────────────────────────────
+
+def test_scan_skips_all_on_market_event_day():
+    ctx = _make_ctx(quotes={"RELIANCE": {"ltp": 2850.0}})
+    ctx["events"].is_market_event_day.return_value = True
+    main._scan_entries(ctx)
+    ctx["fetcher"].get_quotes.assert_not_called()
+
+
+def test_scan_drops_symbol_with_earnings_event():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["events"].symbol_has_event.side_effect = lambda s: s == "RELIANCE"
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BULLISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]) as mock_gen:
+        main._scan_entries(ctx)
+    called = [c.args[0] for c in mock_gen.call_args_list]
+    assert "RELIANCE" not in called  # dropped by earnings event
+    assert "TCS" in called
+
+
+def test_scan_respects_sector_cap():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["risk"].check_sector_cap.return_value = (False, "sector cap for ENERGY reached (2)")
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BULLISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["executor"].place_order.assert_not_called()
 
 
 # ── V2 P1: SQLite ledger recording ────────────────────────────────────────────
