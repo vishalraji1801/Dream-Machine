@@ -521,7 +521,6 @@ def _execute_entry(ctx: dict, symbol: str, signal, qty: int) -> None:
 def eod_square_off(ctx: dict) -> None:
     """Market-order close all open positions at EOD (FR-24)."""
     positions = ctx["positions"]
-    fetcher = ctx["fetcher"]
     executor = ctx["executor"]
     risk = ctx["risk"]
 

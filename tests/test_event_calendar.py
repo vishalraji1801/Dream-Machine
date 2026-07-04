@@ -1,6 +1,5 @@
 from datetime import date
 
-import pytest
 import yaml
 
 from src.event_calendar import EventCalendar

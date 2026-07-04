@@ -29,7 +29,6 @@ class DataStreamer:
         """
         self._ticker = KiteTicker(api_key, access_token)
         self._symbol_to_token = instruments
-        self._token_to_symbol = {v: k for k, v in instruments.items()}
         self._ticks: dict[int, dict] = {}
         self._tick_time: dict[int, float] = {}
         self._max_tick_age = max_tick_age_seconds

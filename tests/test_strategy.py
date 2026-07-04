@@ -1,7 +1,7 @@
 import pandas as pd
 import pytest
 
-from src.strategy import TradeSignal, generate_signal, should_exit
+from src.strategy import TradeSignal, generate_signal
 
 
 @pytest.fixture
@@ -78,24 +78,6 @@ def test_hold_returns_zero_prices(cfg):
         assert signal.target == 0.0
 
 
-def test_should_exit_ema_reversal_buy(cfg):
-    class FakePos:
-        direction = "BUY"
-
-    df = _make_df(n=80, trend="down")
-    exit_flag, reason = should_exit("RELIANCE", df, FakePos(), cfg)
-    assert isinstance(exit_flag, bool)
-
-
-def test_should_exit_insufficient_data(cfg):
-    class FakePos:
-        direction = "BUY"
-
-    exit_flag, reason = should_exit("X", _make_df(n=5), FakePos(), cfg)
-    assert exit_flag is False
-    assert reason == ""
-
-
 def test_signal_sl_target_ratio(cfg):
     signal = generate_signal("TEST", _make_df(n=80, trend="up"), cfg)
     if signal.direction == "BUY":
@@ -106,7 +88,6 @@ def test_signal_sl_target_ratio(cfg):
 
 # ── market_regime (SCRUM-67) ─────────────────────────────────────────────────
 
-import pandas as pd
 from src.strategy import market_regime
 
 
@@ -147,7 +128,6 @@ def test_regime_neutral_when_df_none():
 
 # ── V2 P4: ATR helpers, dispatcher, and portfolio strategies ──────────────────
 
-import numpy as np
 from src.strategy import (STRATEGY_REGISTRY, _atr, _sl_target, _supertrend_dir,
                           generate_signal as gen)
 

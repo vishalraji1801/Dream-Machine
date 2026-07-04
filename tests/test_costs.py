@@ -20,12 +20,9 @@ def test_costs_positive_for_typical_trade(cfg):
 
 
 def test_brokerage_capped_at_20_per_leg(cfg):
-    # 0.03% of 10L = 300 → capped at 20 per leg
+    # 0.03% of 10L = 300/leg, but brokerage is capped at 20/leg, so total costs
+    # stay far below what uncapped brokerage would imply.
     big = estimate_intraday_costs(1_000_000, 1_000_000, cfg)
-    small = estimate_intraday_costs(10_000, 10_000, cfg)
-    # brokerage on small trade: 0.03% of 10k = 3 per leg (not capped)
-    # verify cap keeps the big trade's brokerage component at 40 total:
-    # exchange+sebi+stt+stamp scale with value, brokerage does not
     assert big < 1_000_000 * 0.001  # far below uncapped scaling
 
 

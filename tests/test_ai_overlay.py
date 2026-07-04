@@ -1,4 +1,3 @@
-import pytest
 import yaml
 
 from src.ai_overlay import apply_overlay, load_overlay

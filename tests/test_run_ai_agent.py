@@ -2,8 +2,6 @@
 import importlib.util
 import os
 
-import pytest
-
 _SPEC = importlib.util.spec_from_file_location(
     "run_ai_agent",
     os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "run_ai_agent.py"),
