@@ -1,7 +1,7 @@
 """
 Tests for main.py — startup, trading cycle, EOD square-off, graceful shutdown.
 """
-from unittest.mock import MagicMock, patch, call, ANY
+from unittest.mock import MagicMock, patch, ANY
 import pytest
 
 import main
@@ -500,39 +500,29 @@ def test_run_sends_critical_error_on_unhandled_exception():
 
 
 def test_run_stop_event_exits_loop():
+    """A /stop (pause_event unused here) sets stop_event before the first cycle;
+    the loop must exit cleanly without ever calling trading_cycle."""
     ctx = _make_ctx()
     ctx["risk"].is_market_open.return_value = True
     call_count = {"n": 0}
 
-    def _cycle_then_stop(c):
+    def _count_cycle(c, **kwargs):
         call_count["n"] += 1
 
+    def fake_tc(bot_token, chat_id, stop_event, status_fn=None, pause_event=None):
+        m = MagicMock()
+        m.start = lambda: stop_event.set()  # simulate /stop arriving immediately
+        return m
+
     with patch("main.startup", return_value=ctx), \
-         patch("main.trading_cycle", side_effect=_cycle_then_stop), \
+         patch("main.trading_cycle", side_effect=_count_cycle), \
          patch("main.eod_square_off"), \
          patch("main._send_daily_summary"), \
-         patch("main.time.sleep") as mock_sleep:
-        mock_ctrl = MagicMock()
-        def _start_and_stop_bot():
-            # Simulate /stop received after first cycle
-            import threading
-            stop_event_ref = {"e": None}
-            original_tc = main.TelegramController
+         patch("main.time.sleep"), \
+         patch("main.TelegramController", side_effect=fake_tc):
+        main.run()
 
-            def fake_tc(bot_token, chat_id, stop_event, status_fn=None, pause_event=None):
-                stop_event_ref["e"] = stop_event
-                m = MagicMock()
-                m.start = lambda: stop_event.set()  # set immediately
-                m.stop = MagicMock()
-                return m
-
-            with patch("main.TelegramController", side_effect=fake_tc):
-                main.run()
-
-        _start_and_stop_bot()
-
-    # Loop should have exited without KeyboardInterrupt
-    assert call_count["n"] == 0  # stop_event set before first cycle
+    assert call_count["n"] == 0  # stop_event set before the first cycle
 
 
 # ── signal_generated alert ────────────────────────────────────────────────────
@@ -1168,7 +1158,7 @@ def test_startup_restores_same_day_state():
          patch("main.load_config", return_value=_make_ctx()["cfg"]), \
          patch("main.setup_logging"), \
          patch("main.load_kite_session", return_value=MagicMock()), \
-         patch("main.AlertManager", return_value=MagicMock()) as MockAlert, \
+         patch("main.AlertManager", return_value=MagicMock()), \
          patch("main.DataFetcher") as MockFetcher, \
          patch("main.DataStreamer", return_value=MagicMock()), \
          patch("main.OrderExecutor", return_value=MagicMock()), \

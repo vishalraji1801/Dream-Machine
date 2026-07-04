@@ -60,6 +60,5 @@ def test_log_format_contains_required_fields(tmp_path, monkeypatch, capsys):
 def test_log_levels_respected(tmp_path, monkeypatch):
     monkeypatch.setattr(log_mod, "_LOG_DIR", str(tmp_path))
     setup_logging(level="WARNING")
-    logger = get_logger("level_test")
     log_files = list(tmp_path.glob("trading_bot_*.log"))
     assert len(log_files) == 1

@@ -1,7 +1,6 @@
 kiteconnect
 python-dotenv
 pyyaml
-schedule
 requests
 pandas
 ta

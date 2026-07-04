@@ -137,15 +137,6 @@ def test_square_off_at_time_returns_all(pm):
     assert len(positions) == 2
 
 
-def test_verify_all_closed_empty(pm):
-    assert pm.verify_all_closed() is True
-
-
-def test_verify_all_closed_with_remaining(pm):
-    pm.add_position("X", "BUY", 100.0, 1, 99.0, 102.0)
-    assert pm.verify_all_closed() is False
-
-
 # ── Unrealized P&L ────────────────────────────────────────────────────────────
 
 def test_unrealized_pnl_buy_profit():

@@ -146,11 +146,3 @@ class PositionManager:
         if positions:
             logger.warning(f"EOD square-off triggered: {len(positions)} positions to close")
         return positions
-
-    def verify_all_closed(self) -> bool:
-        """Called after square-off. Returns True if no open positions remain."""
-        if self._positions:
-            logger.critical(f"Square-off incomplete: {list(self._positions.keys())} still open!")
-            return False
-        logger.info("All positions confirmed closed after square-off")
-        return True

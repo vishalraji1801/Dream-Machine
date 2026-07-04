@@ -224,7 +224,7 @@ def _supertrend_dir(df: pd.DataFrame, period: int, mult: float) -> Optional[list
     """Return the per-candle supertrend direction (+1 up, -1 down), or None."""
     if len(df) < period + 1:
         return None
-    high, low, close = df["high"].values, df["low"].values, df["close"].values
+    close = df["close"].values
     prev_close = df["close"].shift(1)
     tr = pd.concat([
         df["high"] - df["low"],
@@ -324,26 +324,3 @@ def market_regime(df: pd.DataFrame, cfg: dict) -> Regime:
     if last_close < last_ema * (1 - band):
         return "BEARISH"
     return "NEUTRAL"
-
-
-def should_exit(symbol: str, df: pd.DataFrame, position, cfg: dict) -> tuple[bool, str]:
-    """
-    Check EMA-reversal exit for an open position.
-    Price-based exits (SL / target) are handled by PositionManager.
-    `position` needs a .direction attribute ('BUY' or 'SELL').
-    """
-    if len(df) < _min_rows(cfg):
-        return False, ""
-
-    df = _compute_indicators(df, cfg)
-    lookback = cfg["ema_crossover_lookback"]
-
-    if position.direction == "BUY" and _ema_crossed_below(df, lookback):
-        logger.info(f"{symbol}: EMA reversal — exiting BUY")
-        return True, "ema_reversal"
-
-    if position.direction == "SELL" and _ema_crossed_above(df, lookback):
-        logger.info(f"{symbol}: EMA reversal — exiting SELL")
-        return True, "ema_reversal"
-
-    return False, ""
