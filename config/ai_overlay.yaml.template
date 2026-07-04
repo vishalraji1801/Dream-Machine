@@ -1,0 +1,6 @@
+# AI overlay — written by the scheduled Claude pre-market strategist.
+# This default is a NO-OP: with only a meta block, the bot applies nothing and
+# runs on config.yaml. See docs/overlay_schema.md for the full schema and bounds.
+meta:
+  written_by: template
+  note: "No overlay active. The pre-market strategist agent overwrites this file."

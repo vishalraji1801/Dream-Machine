@@ -12,6 +12,7 @@ from datetime import datetime
 import yaml
 from dotenv import load_dotenv
 
+from src.ai_overlay import apply_overlay, load_overlay
 from src.alert_manager import AlertManager
 from src.auth import load_kite_session
 from src.costs import estimate_intraday_costs, trade_leg_values
@@ -26,6 +27,7 @@ from src.risk_manager import RiskManager
 from src.state_store import StateStore
 from src.strategy import generate_signal, market_regime
 from src.telegram_controller import TelegramController
+from src.trade_db import TradeDB
 from src.trade_ledger import TradeLedger
 
 logger = get_logger("main")
@@ -59,6 +61,16 @@ def startup() -> dict:
         chat_id=os.getenv("TELEGRAM_CHAT_ID"),
     )
 
+    # AI overlay (P5) — validated sandbox written by the scheduled Claude strategist.
+    overlay, ov_err = load_overlay(cfg)
+    if ov_err:
+        logger.error(f"AI overlay REJECTED: {ov_err}")
+        alert.send_raw(f"AI overlay REJECTED — running on config.yaml. Reason: {ov_err}")
+    elif overlay:
+        cfg = apply_overlay(cfg, overlay)
+        logger.warning(f"AI overlay applied: {overlay}")
+        alert.send_raw(f"AI overlay applied for today: {overlay}")
+
     fetcher = DataFetcher(kite, cfg)
     symbols = list(cfg["trading"]["watchlist"])
     if cfg["strategy"].get("regime_filter_enabled"):
@@ -66,7 +78,10 @@ def startup() -> dict:
     if not fetcher.load_instruments(symbols):
         raise RuntimeError("Instrument load failed — cannot start without token map")
 
-    streamer = DataStreamer(kite.api_key, kite.access_token, fetcher._instruments)
+    streamer = DataStreamer(
+        kite.api_key, kite.access_token, fetcher._instruments,
+        max_tick_age_seconds=cfg["scheduler"].get("max_tick_age_seconds", 0),
+    )
     streamer.connect()
 
     paper_mode = cfg.get("paper_trading", {}).get("enabled", False)
@@ -85,6 +100,8 @@ def startup() -> dict:
         "risk": RiskManager(cfg),
         "positions": PositionManager(cfg),
         "ledger": TradeLedger(),
+        "db": TradeDB(),
+        "source": "paper" if paper_mode else "live",
         "state": StateStore(),
         "calendar": MarketCalendar(cfg),
     }
@@ -118,6 +135,13 @@ def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
         _scan_entries(ctx)
     else:
         logger.info("Paused — entry scan skipped")
+
+    db = ctx.get("db")
+    if db is not None:
+        db.record_snapshot(
+            open_positions=ctx["positions"].open_count(),
+            daily_pnl=risk._daily_pnl, trades_today=risk._trades_today,
+        )
 
 
 def _reconcile_positions(ctx: dict) -> None:
@@ -163,6 +187,7 @@ def _reconcile_positions(ctx: dict) -> None:
                 entry_time=pos.entry_time, exit_time=datetime.now(),
                 pnl=pnl, exit_reason="external_exit",
             )
+            _db_trade(ctx, pos, exit_price, pnl, costs, "external_exit")
             ctx["alert"].send_raw(
                 f"{pos.symbol} closed at broker (GTT fired or manual) @ {exit_price} | "
                 f"P&L Rs.{pnl:.2f}"
@@ -253,17 +278,21 @@ def _scan_entries(ctx: dict) -> None:
         if regime and ((signal.direction == "BUY" and regime != "BULLISH")
                        or (signal.direction == "SELL" and regime != "BEARISH")):
             logger.info(f"{symbol}: {signal.direction} signal against {regime} regime — skipped")
+            _db_signal(ctx, symbol, signal.direction, taken=False, reason="regime_mismatch")
             continue
         ctx["alert"].send("signal_generated", direction=signal.direction, symbol=symbol,
                           entry=signal.entry_price, sl=signal.stop_loss, target=signal.target)
         qty = risk.calculate_quantity(signal.entry_price, signal.stop_loss)
         if qty <= 0:
+            _db_signal(ctx, symbol, signal.direction, taken=False, reason="zero_quantity")
             continue
         order_value = signal.entry_price * qty
         ok, block_reason = risk.check_pre_trade(order_value, margin, positions.open_count())
         if not ok:
             logger.info(f"Pre-trade blocked for {symbol}: {block_reason}")
+            _db_signal(ctx, symbol, signal.direction, taken=False, reason=block_reason)
             continue
+        _db_signal(ctx, symbol, signal.direction, taken=True)
         _execute_entry(ctx, symbol, signal, qty)
         break  # one entry per cycle to stay within position limits
 
@@ -372,6 +401,7 @@ def _execute_exit(ctx: dict, pos, ltp: float, reason: str) -> None:
         entry_time=removed.entry_time, exit_time=datetime.now(),
         pnl=pnl, exit_reason=reason,
     )
+    _db_trade(ctx, removed, exit_price, pnl, costs, reason)
 
     if reason == "sl_hit":
         alert.send("sl_hit", symbol=pos.symbol, entry=pos.entry_price,
@@ -474,6 +504,7 @@ def eod_square_off(ctx: dict) -> None:
             entry_time=pos.entry_time, exit_time=datetime.now(),
             pnl=pnl, exit_reason="eod_square_off",
         )
+        _db_trade(ctx, pos, exit_price, pnl, costs, "eod_square_off")
         logger.info(f"EOD square-off: {pos.symbol} @ {exit_price} | P&L={pnl:.2f}")
 
     logger.info("All positions squared off")
@@ -484,6 +515,45 @@ def _save_state(ctx: dict) -> None:
     risk = ctx["risk"]
     ctx["state"].save(risk._daily_pnl, risk._trades_today,
                       ctx["positions"].get_open_positions())
+
+
+def _db_trade(ctx: dict, pos, exit_price: float, pnl: float, costs: float, reason: str) -> None:
+    """Record a closed trade to the SQLite ledger (V2 P1), tagged live/paper."""
+    db = ctx.get("db")
+    if db is None:
+        return
+    db.record_trade(
+        source=ctx.get("source", "live"),
+        strategy=ctx["cfg"]["strategy"].get("name"),
+        symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,
+        entry_price=pos.entry_price, exit_price=exit_price,
+        entry_time=pos.entry_time, exit_time=datetime.now(),
+        pnl=pnl, costs=costs, exit_reason=reason,
+    )
+
+
+def _db_signal(ctx: dict, symbol: str, direction: str, taken: bool, reason: str = "") -> None:
+    db = ctx.get("db")
+    if db is None:
+        return
+    db.record_signal(source=ctx.get("source", "live"), symbol=symbol,
+                     direction=direction, taken=taken, reason=reason,
+                     strategy=ctx["cfg"]["strategy"].get("name"))
+
+
+def _relay_ai_outbox(ctx: dict) -> None:
+    """Send anything the scheduled Claude agents left in the Telegram outbox, then clear it."""
+    path = ctx["cfg"].get("ai", {}).get("telegram_outbox")
+    if not path or not os.path.exists(path):
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            text = f.read().strip()
+        if text:
+            ctx["alert"].send_raw(f"[AI] {text}")
+        open(path, "w").close()  # truncate after relaying
+    except OSError as exc:
+        logger.warning(f"AI outbox relay failed: {exc}")
 
 
 def _maybe_heartbeat(ctx: dict, hb: dict) -> None:
@@ -572,6 +642,7 @@ def run() -> int:
     try:
         while not shutdown["requested"] and not stop_event.is_set():
             _maybe_heartbeat(ctx, hb)
+            _relay_ai_outbox(ctx)
             if not ctx["calendar"].is_trading_day():
                 logger.info("Market holiday/weekend — idling")
                 time.sleep(300)

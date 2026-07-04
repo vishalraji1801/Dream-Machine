@@ -1,7 +1,7 @@
 """
 Tests for main.py — startup, trading cycle, EOD square-off, graceful shutdown.
 """
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch, call, ANY
 import pytest
 
 import main
@@ -94,11 +94,13 @@ def _make_ctx(
     calendar.is_market_open_now.return_value = True
     calendar.status_text.return_value = "OPEN"
 
+    db = MagicMock()
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions, "ledger": ledger,
-        "state": state, "calendar": calendar,
+        "state": state, "calendar": calendar, "db": db, "source": "paper",
         "_mock_signal": mock_signal,
     }
 
@@ -809,6 +811,72 @@ def test_run_idles_on_holiday():
         main.run()
     mock_cycle.assert_not_called()
     ctx["risk"].is_market_open.assert_not_called()  # calendar short-circuits
+
+
+# ── V2 P1: SQLite ledger recording ────────────────────────────────────────────
+
+def test_execute_exit_records_trade_to_db():
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)
+    ctx = _make_ctx(open_positions=[pos])
+    ctx["positions"].remove_position.return_value = pos
+    main._execute_exit(ctx, pos, 2856.0, "target_hit")
+    ctx["db"].record_trade.assert_called_once()
+    kwargs = ctx["db"].record_trade.call_args.kwargs
+    assert kwargs["source"] == "paper"
+    assert kwargs["symbol"] == "RELIANCE"
+    assert kwargs["exit_reason"] == "target_hit"
+
+
+def test_scan_records_skipped_signal_on_regime_block():
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="BUY",
+    )
+    ctx["_mock_signal"].direction = "BUY"
+    with patch("main._get_regime", return_value="BEARISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+    ctx["db"].record_signal.assert_any_call(
+        source="paper", symbol="RELIANCE", direction="BUY",
+        taken=False, reason="regime_mismatch", strategy=ANY)
+
+
+def test_trading_cycle_records_snapshot():
+    ctx = _make_ctx()
+    with patch("main._manage_open_positions"), patch("main._scan_entries"):
+        main.trading_cycle(ctx)
+    ctx["db"].record_snapshot.assert_called_once()
+
+
+# ── V2 P2: AI Telegram outbox relay ───────────────────────────────────────────
+
+def test_relay_ai_outbox_sends_and_clears(tmp_path):
+    outbox = tmp_path / "telegram_outbox.txt"
+    outbox.write_text("Post-market: 3 trades, net +Rs.420, PF 1.4")
+    ctx = _make_ctx()
+    ctx["cfg"]["ai"] = {"telegram_outbox": str(outbox)}
+    main._relay_ai_outbox(ctx)
+    ctx["alert"].send_raw.assert_called_once()
+    assert "Post-market" in ctx["alert"].send_raw.call_args.args[0]
+    assert outbox.read_text() == ""  # cleared after relay
+
+
+def test_relay_ai_outbox_noop_when_empty(tmp_path):
+    outbox = tmp_path / "telegram_outbox.txt"
+    outbox.write_text("   \n")
+    ctx = _make_ctx()
+    ctx["cfg"]["ai"] = {"telegram_outbox": str(outbox)}
+    main._relay_ai_outbox(ctx)
+    ctx["alert"].send_raw.assert_not_called()
+
+
+def test_relay_ai_outbox_noop_when_no_file(tmp_path):
+    ctx = _make_ctx()
+    ctx["cfg"]["ai"] = {"telegram_outbox": str(tmp_path / "missing.txt")}
+    main._relay_ai_outbox(ctx)  # should not raise
+    ctx["alert"].send_raw.assert_not_called()
 
 
 # ── Transaction costs (SCRUM-65) ──────────────────────────────────────────────
