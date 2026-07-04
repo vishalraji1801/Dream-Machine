@@ -25,11 +25,12 @@ from dotenv import load_dotenv
 
 from src.auth import load_kite_session
 from src.backtest_runner import (format_summary, load_all, run_across_timeframes,
-                                 select_stocks, write_summary)
+                                 write_summary)
 from src.backtest_store import BacktestStore
 from src.data_fetcher import DataFetcher
 from src.historical_loader import HistoricalLoader
 from src.logger import get_logger, setup_logging
+from src.stock_selector import select_stocks
 
 logger = get_logger("backtest_run")
 

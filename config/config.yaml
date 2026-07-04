@@ -154,8 +154,13 @@ universe:
                           # paper run to validate before use.
   price_min: 100
   price_max: 5000
-  fno_underlyings: []     # optional whitelist of liquid MIS-friendly names
+  fno_underlyings: []     # optional curated pool; empty -> use the watchlist
   exclude: []             # symbols to always exclude (F&O ban-list, etc.)
+  # Backtest stock-selection quality filters (SCRUM-98):
+  min_turnover_cr: 50     # min avg daily turnover in Rs. crore (liquidity floor)
+  atr_pct_min: 1.0        # daily ATR as % of price — volatility floor
+  atr_pct_max: 6.0        # volatility ceiling
+  selection_lookback_days: 30
 
 scanner:
   top_n: 30               # candidates handed to the strategy engine each cycle

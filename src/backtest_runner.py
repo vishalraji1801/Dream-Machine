@@ -12,18 +12,8 @@ from typing import Optional
 
 from src.backtester import Backtester
 from src.logger import get_logger
-from src.universe_builder import UniverseBuilder
 
 logger = get_logger("backtest_runner")
-
-
-def select_stocks(kite, cfg: dict, num_stocks: int) -> list[dict]:
-    """Pick the backtest stock set via the universe builder, capped at num_stocks."""
-    universe = UniverseBuilder(cfg).build(kite)
-    if num_stocks and num_stocks > 0:
-        universe = universe[:num_stocks]
-    logger.info(f"Selected {len(universe)} stocks for backtesting")
-    return universe
 
 
 def load_all(loader, stocks: list[dict], index: Optional[dict] = None,
