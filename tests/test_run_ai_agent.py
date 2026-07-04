@@ -24,8 +24,8 @@ def test_build_env_preserves_other_vars(monkeypatch):
     assert "PATH" in env
 
 
-def test_agents_registry_has_three_offline_agents():
-    assert set(run_ai_agent.AGENTS) == {"premarket", "postmarket", "weekly"}
+def test_agents_registry_has_offline_agents():
+    assert set(run_ai_agent.AGENTS) == {"premarket", "postmarket", "weekly", "backtest"}
     for cfg in run_ai_agent.AGENTS.values():
         # offline analysts: no order-placing tools, prompt file declared
         assert "prompt" in cfg and "tools" in cfg
