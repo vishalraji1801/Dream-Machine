@@ -35,3 +35,16 @@ def test_prompt_files_exist():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     for cfg in run_ai_agent.AGENTS.values():
         assert os.path.exists(os.path.join(root, cfg["prompt"]))
+
+
+def test_find_claude_falls_back_to_local_bin(monkeypatch, tmp_path):
+    import shutil
+    # nothing on PATH...
+    monkeypatch.setattr(run_ai_agent.shutil, "which", lambda name: None)
+    # ...but a managed install exists under ~/.local/bin
+    home = tmp_path
+    local = home / ".local" / "bin"
+    local.mkdir(parents=True)
+    (local / "claude.exe").write_text("")
+    monkeypatch.setattr(run_ai_agent.os.path, "expanduser", lambda p: str(home))
+    assert run_ai_agent.find_claude().endswith("claude.exe")
