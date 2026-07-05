@@ -212,9 +212,11 @@ def test_dispatcher_routes_to_named_strategy(cfg):
     assert calls.get("hit")
 
 
-def test_registry_has_four_strategies():
-    assert set(STRATEGY_REGISTRY) == {
-        "momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend"}
+def test_registry_has_all_strategies():
+    assert {"momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend",
+            "ema_crossover", "rsi_reversal", "ema_pullback", "breakout_retest",
+            "macd_divergence", "support_resistance", "price_action_levels",
+            "swing_mtf", "smc"} == set(STRATEGY_REGISTRY)
 
 
 # vwap mean reversion

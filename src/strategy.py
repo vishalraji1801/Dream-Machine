@@ -7,7 +7,7 @@ from typing import Literal, Optional
 
 import pandas as pd
 from ta.momentum import RSIIndicator
-from ta.trend import EMAIndicator
+from ta.trend import EMAIndicator, MACD
 from ta.volume import VolumeWeightedAveragePrice
 
 from src.logger import get_logger
@@ -274,6 +274,195 @@ def _supertrend(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
     return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_flip")
 
 
+# ── Strategy library — 9 common strategies (ORB already implemented above) ────
+
+def _hold(symbol: str, reason: str) -> TradeSignal:
+    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, reason)
+
+
+def _ema_col(df: pd.DataFrame, window: int):
+    return EMAIndicator(df["close"], window=window).ema_indicator()
+
+
+def _crossed_above(a, b) -> bool:
+    """Series a crossed above series b on the latest bar."""
+    return bool(a.iloc[-2] <= b.iloc[-2] and a.iloc[-1] > b.iloc[-1])
+
+
+def _crossed_below(a, b) -> bool:
+    return bool(a.iloc[-2] >= b.iloc[-2] and a.iloc[-1] < b.iloc[-1])
+
+
+def _ema_crossover(symbol, df, cfg):
+    """Dual-EMA crossover (default 20/50)."""
+    fast, slow = cfg.get("ec_fast", 20), cfg.get("ec_slow", 50)
+    if len(df) < slow + 2:
+        return _hold(symbol, "insufficient_data")
+    ef, es = _ema_col(df, fast), _ema_col(df, slow)
+    close = float(df["close"].iloc[-1])
+    if _crossed_above(ef, es):
+        sl, tgt = _sl_target(df, close, "BUY", cfg)
+        return TradeSignal("BUY", symbol, close, sl, tgt, "ema_crossover_up")
+    if _crossed_below(ef, es):
+        sl, tgt = _sl_target(df, close, "SELL", cfg)
+        return TradeSignal("SELL", symbol, close, sl, tgt, "ema_crossover_down")
+    return _hold(symbol, "no_cross")
+
+
+def _rsi_reversal(symbol, df, cfg):
+    """RSI overbought/oversold reversal (default RSI-2, 10/90)."""
+    period = cfg.get("rsi_rev_period", 2)
+    ob, os_ = cfg.get("rsi_rev_overbought", 90), cfg.get("rsi_rev_oversold", 10)
+    if len(df) < period + 3:
+        return _hold(symbol, "insufficient_data")
+    r = float(RSIIndicator(df["close"], window=period).rsi().iloc[-1])
+    close = float(df["close"].iloc[-1])
+    if r <= os_:
+        sl, tgt = _sl_target(df, close, "BUY", cfg)
+        return TradeSignal("BUY", symbol, close, sl, tgt, "rsi_oversold_reversal")
+    if r >= ob:
+        sl, tgt = _sl_target(df, close, "SELL", cfg)
+        return TradeSignal("SELL", symbol, close, sl, tgt, "rsi_overbought_reversal")
+    return _hold(symbol, "rsi_neutral")
+
+
+def _ema_pullback(symbol, df, cfg):
+    """Trend-following pullback to the EMA (default EMA-20)."""
+    w = cfg.get("pullback_ema", 20)
+    if len(df) < w + 5:
+        return _hold(symbol, "insufficient_data")
+    ema = _ema_col(df, w)
+    e, e_prev = float(ema.iloc[-1]), float(ema.iloc[-5])
+    close = float(df["close"].iloc[-1])
+    low, high = float(df["low"].iloc[-1]), float(df["high"].iloc[-1])
+    tol = cfg.get("pullback_tol_pct", 0.3) / 100
+    if e > e_prev and close > e and low <= e * (1 + tol):        # uptrend, dipped to EMA
+        sl, tgt = _sl_target(df, close, "BUY", cfg)
+        return TradeSignal("BUY", symbol, close, sl, tgt, "ema_pullback_long")
+    if e < e_prev and close < e and high >= e * (1 - tol):       # downtrend, rallied to EMA
+        sl, tgt = _sl_target(df, close, "SELL", cfg)
+        return TradeSignal("SELL", symbol, close, sl, tgt, "ema_pullback_short")
+    return _hold(symbol, "no_pullback")
+
+
+def _breakout_retest(symbol, df, cfg):
+    """Break of a level then retest of it as new support/resistance."""
+    lb = cfg.get("br_lookback", 20)
+    if len(df) < lb + 3:
+        return _hold(symbol, "insufficient_data")
+    prior = df.iloc[:-1].tail(lb)
+    res, sup = float(prior["high"].max()), float(prior["low"].min())
+    last = df.iloc[-1]
+    close, low, high = float(last["close"]), float(last["low"]), float(last["high"])
+    tol = cfg.get("br_tol_pct", 0.3) / 100
+    if close > res and low <= res * (1 + tol):                  # broke above, retested
+        sl, tgt = _sl_target(df, close, "BUY", cfg)
+        return TradeSignal("BUY", symbol, close, sl, tgt, "breakout_retest_up")
+    if close < sup and high >= sup * (1 - tol):
+        sl, tgt = _sl_target(df, close, "SELL", cfg)
+        return TradeSignal("SELL", symbol, close, sl, tgt, "breakout_retest_down")
+    return _hold(symbol, "no_breakout_retest")
+
+
+def _macd_divergence(symbol, df, cfg):
+    """MACD-histogram vs price divergence (weakening momentum)."""
+    lb = cfg.get("macd_div_lookback", 20)
+    if len(df) < 35:
+        return _hold(symbol, "insufficient_data")
+    hist = MACD(df["close"]).macd_diff()
+    close = df["close"]
+    half = lb // 2
+    p1_lo, p2_lo = float(close.iloc[-lb:-half].min()), float(close.iloc[-half:].min())
+    h1_lo, h2_lo = float(hist.iloc[-lb:-half].min()), float(hist.iloc[-half:].min())
+    p1_hi, p2_hi = float(close.iloc[-lb:-half].max()), float(close.iloc[-half:].max())
+    h1_hi, h2_hi = float(hist.iloc[-lb:-half].max()), float(hist.iloc[-half:].max())
+    turning_up = float(hist.iloc[-1]) > float(hist.iloc[-2])
+    turning_dn = float(hist.iloc[-1]) < float(hist.iloc[-2])
+    c = float(close.iloc[-1])
+    if p2_lo < p1_lo and h2_lo > h1_lo and turning_up:          # bullish divergence
+        sl, tgt = _sl_target(df, c, "BUY", cfg)
+        return TradeSignal("BUY", symbol, c, sl, tgt, "macd_bullish_divergence")
+    if p2_hi > p1_hi and h2_hi < h1_hi and turning_dn:          # bearish divergence
+        sl, tgt = _sl_target(df, c, "SELL", cfg)
+        return TradeSignal("SELL", symbol, c, sl, tgt, "macd_bearish_divergence")
+    return _hold(symbol, "no_divergence")
+
+
+def _support_resistance(symbol, df, cfg):
+    """Bounce off historical support / rejection at resistance."""
+    lb = cfg.get("sr_lookback", 30)
+    if len(df) < lb + 2:
+        return _hold(symbol, "insufficient_data")
+    prior = df.iloc[:-1].tail(lb)
+    support, resistance = float(prior["low"].min()), float(prior["high"].max())
+    last = df.iloc[-1]
+    close, low, high = float(last["close"]), float(last["low"]), float(last["high"])
+    tol = cfg.get("sr_tol_pct", 0.3) / 100
+    if low <= support * (1 + tol) and close > support:          # bounce off support
+        sl, tgt = _sl_target(df, close, "BUY", cfg)
+        return TradeSignal("BUY", symbol, close, sl, tgt, "support_bounce")
+    if high >= resistance * (1 - tol) and close < resistance:   # rejection at resistance
+        sl, tgt = _sl_target(df, close, "SELL", cfg)
+        return TradeSignal("SELL", symbol, close, sl, tgt, "resistance_rejection")
+    return _hold(symbol, "no_level_touch")
+
+
+def _price_action_levels(symbol, df, cfg):
+    """Rejection candles (long wicks) at swing highs/lows."""
+    lb = cfg.get("pa_lookback", 20)
+    if len(df) < lb + 2:
+        return _hold(symbol, "insufficient_data")
+    prior = df.iloc[:-1].tail(lb)
+    swing_low, swing_high = float(prior["low"].min()), float(prior["high"].max())
+    o, c = float(df["open"].iloc[-1]), float(df["close"].iloc[-1])
+    h, l = float(df["high"].iloc[-1]), float(df["low"].iloc[-1])
+    rng = (h - l) or 1e-9
+    lower_wick = (min(o, c) - l) / rng
+    upper_wick = (h - max(o, c)) / rng
+    tol = cfg.get("pa_tol_pct", 0.5) / 100
+    if l <= swing_low * (1 + tol) and c > o and lower_wick > 0.5:   # bullish rejection
+        sl, tgt = _sl_target(df, c, "BUY", cfg)
+        return TradeSignal("BUY", symbol, c, sl, tgt, "bullish_rejection")
+    if h >= swing_high * (1 - tol) and c < o and upper_wick > 0.5:  # bearish rejection
+        sl, tgt = _sl_target(df, c, "SELL", cfg)
+        return TradeSignal("SELL", symbol, c, sl, tgt, "bearish_rejection")
+    return _hold(symbol, "no_rejection")
+
+
+def _swing_mtf(symbol, df, cfg):
+    """Multi-timeframe proxy: long-EMA trend gate + short-EMA cross entry."""
+    lo, sh = cfg.get("mtf_long_ema", 50), cfg.get("mtf_short_ema", 20)
+    if len(df) < lo + 3:
+        return _hold(symbol, "insufficient_data")
+    el, es = _ema_col(df, lo), _ema_col(df, sh)
+    close = float(df["close"].iloc[-1])
+    el_now, el_prev = float(el.iloc[-1]), float(el.iloc[-3])
+    if close > el_now and el_now > el_prev and _crossed_above(es, el):
+        sl, tgt = _sl_target(df, close, "BUY", cfg)
+        return TradeSignal("BUY", symbol, close, sl, tgt, "swing_mtf_long")
+    if close < el_now and el_now < el_prev and _crossed_below(es, el):
+        sl, tgt = _sl_target(df, close, "SELL", cfg)
+        return TradeSignal("SELL", symbol, close, sl, tgt, "swing_mtf_short")
+    return _hold(symbol, "no_mtf_setup")
+
+
+def _smc(symbol, df, cfg):
+    """Smart-money proxy: liquidity sweep of a swing level then reclaim."""
+    lb = cfg.get("smc_lookback", 20)
+    if len(df) < lb + 2:
+        return _hold(symbol, "insufficient_data")
+    prior = df.iloc[:-1].tail(lb)
+    swing_low, swing_high = float(prior["low"].min()), float(prior["high"].max())
+    l, h, c = float(df["low"].iloc[-1]), float(df["high"].iloc[-1]), float(df["close"].iloc[-1])
+    if l < swing_low and c > swing_low:                          # swept lows then reclaimed
+        sl, tgt = _sl_target(df, c, "BUY", cfg)
+        return TradeSignal("BUY", symbol, c, sl, tgt, "smc_liquidity_sweep_long")
+    if h > swing_high and c < swing_high:                        # swept highs then rejected
+        sl, tgt = _sl_target(df, c, "SELL", cfg)
+        return TradeSignal("SELL", symbol, c, sl, tgt, "smc_liquidity_sweep_short")
+    return _hold(symbol, "no_sweep")
+
+
 # ── Registry & dispatcher ─────────────────────────────────────────────────────
 
 STRATEGY_REGISTRY = {
@@ -281,6 +470,15 @@ STRATEGY_REGISTRY = {
     "vwap_mean_reversion":    _vwap_mean_reversion,
     "orb":                    _orb,
     "supertrend":             _supertrend,
+    "ema_crossover":          _ema_crossover,
+    "rsi_reversal":           _rsi_reversal,
+    "ema_pullback":           _ema_pullback,
+    "breakout_retest":        _breakout_retest,
+    "macd_divergence":        _macd_divergence,
+    "support_resistance":     _support_resistance,
+    "price_action_levels":    _price_action_levels,
+    "swing_mtf":              _swing_mtf,
+    "smc":                    _smc,
 }
 
 
