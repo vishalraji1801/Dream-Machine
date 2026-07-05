@@ -54,22 +54,33 @@ class HistoricalLoader:
 
     def load_symbol(self, symbol: str, token: int, end: Optional[datetime] = None,
                     force: bool = False) -> dict:
-        """Ensure a year of data for every timeframe of one symbol. Returns
-        {timeframe_label: rows_stored} (0 = skipped as fresh)."""
+        """
+        Ensure data up to `end` for every timeframe of one symbol, DELTA-loading:
+        fetch only candles newer than what's already stored. Returns
+        {timeframe_label: rows_stored} (0 = already current / skipped).
+        force=True ignores existing data and refetches the full lookback.
+        """
         end = end or datetime.now()
         result = {}
         for tf in self._timeframes:
             label = tf["label"]
-            if not force and self._store.has_fresh(symbol, label):
-                result[label] = 0
-                continue
-            df = self._fetch_timeframe(token, tf, end)
+            last = None if force else self._store.last_timestamp(symbol, label)
+            if last is not None:
+                if last.date() >= end.date():
+                    result[label] = 0            # already current — no fetch
+                    continue
+                lookback = (end.date() - last.date()).days + 1   # delta window only
+            else:
+                lookback = self._lookback        # first load — full year
+            df = self._fetch_timeframe(token, tf, end, lookback)
             result[label] = self._store.upsert_candles(symbol, label, df) if df is not None else 0
         return result
 
-    def _fetch_timeframe(self, token: int, tf: dict, end: datetime) -> Optional[pd.DataFrame]:
+    def _fetch_timeframe(self, token: int, tf: dict, end: datetime,
+                         lookback_days: Optional[int] = None) -> Optional[pd.DataFrame]:
+        lookback_days = self._lookback if lookback_days is None else lookback_days
         frames = []
-        for frm, to in chunk_ranges(end, self._lookback, tf["max_days"]):
+        for frm, to in chunk_ranges(end, lookback_days, tf["max_days"]):
             raw = self._with_retry(
                 lambda t=token, a=frm, b=to, iv=tf["interval"]:
                 self._kite.historical_data(t, a, b, iv))
