@@ -6,6 +6,7 @@ year of data for every timeframe is in the backtest store, run the strategy
 across each timeframe, and produce a per-timeframe results summary that the
 headless Claude analyst reads.
 """
+import copy
 import os
 from datetime import datetime
 from typing import Optional
@@ -14,6 +15,8 @@ from src.backtester import Backtester
 from src.logger import get_logger
 
 logger = get_logger("backtest_runner")
+
+_TF_ORDER = {"1min": 1, "5min": 2, "15min": 3, "30min": 4, "1hr": 5}
 
 
 def load_all(loader, stocks: list[dict], index: Optional[dict] = None,
@@ -46,6 +49,23 @@ def run_across_timeframes(cfg: dict, store, symbols: list[str],
         result = backtester_cls(cfg, window=window).run(candles, index_candles=index_candles)
         summaries.append(_summarize(tf, candles, result))
     return summaries
+
+
+def run_strategies(cfg: dict, store, symbols: list[str], strategies: list[str],
+                   index_symbol: Optional[str] = None, window: int = 60,
+                   backtester_cls=Backtester) -> list[dict]:
+    """Run several strategies across every timeframe; tag each summary with its
+    strategy so the caller gets a strategy x timeframe matrix."""
+    rows = []
+    for strat in strategies:
+        c = copy.deepcopy(cfg)
+        c.setdefault("strategy", {})["name"] = strat
+        logger.info(f"Backtesting strategy '{strat}' across timeframes")
+        for s in run_across_timeframes(c, store, symbols, index_symbol=index_symbol,
+                                       window=window, backtester_cls=backtester_cls):
+            s["strategy"] = strat
+            rows.append(s)
+    return rows
 
 
 def store_timeframes(store, symbols: list[str]) -> list[str]:
@@ -100,4 +120,34 @@ def write_summary(summaries: list[dict], strategy: str,
     with open(path, "w", encoding="utf-8") as f:
         f.write(format_summary(summaries, strategy))
     logger.info(f"Backtest summary written: {path}")
+    return path
+
+
+def format_matrix(rows: list[dict]) -> str:
+    """Strategy x timeframe results table (multiple strategies)."""
+    lines = [
+        f"# Backtest matrix — {datetime.now():%Y-%m-%d}",
+        "",
+        "| Strategy | TF | symbols | trades | net P&L | win% | PF | max DD | expectancy | avg cost |",
+        "|----------|----|--------|--------|---------|------|----|--------|------------|----------|",
+    ]
+    for r in sorted(rows, key=lambda x: (x["strategy"], _TF_ORDER.get(x["timeframe"], 99))):
+        pf = r["profit_factor"]
+        pf_s = f"{pf}" if pf != float("inf") else "inf"
+        lines.append(
+            f"| {r['strategy']} | {r['timeframe']} | {r['symbols']} | {r['trades']} | "
+            f"{r['net_pnl']} | {r['win_rate']} | {pf_s} | {r['max_drawdown']} | "
+            f"{r['expectancy']} | {r['avg_cost']} |")
+    lines.append("")
+    lines.append("Note: compare expectancy vs avg cost per cell; trade counts below ~100 "
+                 "are not statistically conclusive. Trust only after walk-forward (validate.py).")
+    return "\n".join(lines)
+
+
+def write_matrix(rows: list[dict], path: Optional[str] = None) -> str:
+    path = path or os.path.join("logs", f"backtest_matrix_{datetime.now():%Y-%m-%d}.md")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(format_matrix(rows))
+    logger.info(f"Backtest matrix written: {path}")
     return path

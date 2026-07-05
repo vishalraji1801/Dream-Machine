@@ -3,14 +3,16 @@ backtest just ran. Analyze it rigorously and honestly. Do NOT edit code, config,
 or place orders.
 
 Read:
-- The latest `logs/backtest_summary_*.md` (per-timeframe results table).
+- The latest `logs/backtest_matrix_*.md` (strategy x timeframe results) — or
+  `logs/backtest_summary_*.md` for a single-strategy run.
 - `data_cache/backtest_data.db` (SQLite) if you need the raw candles or to
   cross-check counts. Tables: candles(symbol, timeframe, timestamp, ohlcv),
   fetch_log.
 
 Analyze:
-1. Compare timeframes (1min / 5min / 15min / 30min / 1hr). Which are profitable
-   net of costs, and which lose? Note the monotonic pattern if any.
+1. Compare BOTH strategies and timeframes. For each strategy, which timeframes
+   are profitable net of costs and which lose? Which strategy x timeframe cell
+   is strongest on a risk-adjusted basis (profit factor + drawdown)?
 2. For each timeframe, judge statistical adequacy: a trade count below ~100 is
    NOT conclusive — say so explicitly. Report expectancy vs average cost (the
    edge is only real if expectancy is comfortably above one cost-unit).

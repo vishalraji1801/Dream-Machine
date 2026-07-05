@@ -42,6 +42,12 @@ def find_claude() -> str:
         path = shutil.which(name)
         if path:
             return path
+    # PATH may not be refreshed after install — check the managed install location.
+    home = os.path.expanduser("~")
+    for cand in (os.path.join(home, ".local", "bin", "claude.exe"),
+                 os.path.join(home, ".local", "bin", "claude")):
+        if os.path.exists(cand):
+            return cand
     print("ERROR: 'claude' CLI not found on PATH. Install Claude Code and sign in "
           "with your subscription (claude login).")
     sys.exit(2)

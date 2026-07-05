@@ -64,3 +64,35 @@ def test_format_summary_lists_all_timeframes():
     text = format_summary(summaries, "momentum_vwap_breakout")
     assert "5min" in text and "1hr" in text
     assert "momentum_vwap_breakout" in text
+
+
+# ── V2: multi-strategy matrix ─────────────────────────────────────────────────
+
+from src.backtest_runner import run_strategies, format_matrix
+
+
+def test_run_strategies_tags_each_row(tmp_path):
+    store = BacktestStore(str(tmp_path / "bt.db"))
+    store.upsert_candles("RELIANCE", "5min", _df(30))
+    cfg = _cfg(["5min"])
+    rows = run_strategies(cfg, store, ["RELIANCE"],
+                          strategies=["momentum_vwap_breakout", "supertrend"],
+                          backtester_cls=_FakeBT)
+    strategies = {r["strategy"] for r in rows}
+    assert strategies == {"momentum_vwap_breakout", "supertrend"}
+    assert all("timeframe" in r and "trades" in r for r in rows)
+
+
+def test_format_matrix_has_strategy_and_tf_columns():
+    rows = [
+        {"strategy": "momentum_vwap_breakout", "timeframe": "5min", "symbols": 30,
+         "trades": 120, "net_pnl": 5000, "win_rate": 52.0, "profit_factor": 1.4,
+         "max_drawdown": 3000, "expectancy": 41.6, "avg_cost": 40.0},
+        {"strategy": "supertrend", "timeframe": "1hr", "symbols": 30,
+         "trades": 40, "net_pnl": 3200, "win_rate": 56.0, "profit_factor": 1.5,
+         "max_drawdown": 2000, "expectancy": 80.0, "avg_cost": 30.0},
+    ]
+    text = format_matrix(rows)
+    assert "Strategy" in text
+    assert "momentum_vwap_breakout" in text and "supertrend" in text
+    assert "5min" in text and "1hr" in text
