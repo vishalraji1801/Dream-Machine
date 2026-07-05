@@ -92,6 +92,24 @@ strategy:
   # Supertrend params
   supertrend_period: 10
   supertrend_mult: 3.0
+  # ── Strategy library params (SCRUM-101) ──
+  ec_fast: 20                 # ema_crossover fast/slow
+  ec_slow: 50
+  rsi_rev_period: 2           # rsi_reversal (RSI-2 by default)
+  rsi_rev_oversold: 10
+  rsi_rev_overbought: 90
+  pullback_ema: 20            # ema_pullback
+  pullback_tol_pct: 0.3
+  br_lookback: 20             # breakout_retest
+  br_tol_pct: 0.3
+  macd_div_lookback: 20       # macd_divergence
+  sr_lookback: 30             # support_resistance
+  sr_tol_pct: 0.3
+  pa_lookback: 20             # price_action_levels
+  pa_tol_pct: 0.5
+  mtf_long_ema: 50            # swing_mtf
+  mtf_short_ema: 20
+  smc_lookback: 20            # smc
 
 risk:
   total_capital: 500000
@@ -133,7 +151,10 @@ ai:
   overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist
   telegram_outbox: "logs/telegram_outbox.txt"  # AI writes here; the bot relays to Telegram
   # Hard bounds the overlay can never exceed (the safety sandbox):
-  allowed_strategies: ["momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend"]
+  allowed_strategies: ["momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend",
+                       "ema_crossover", "rsi_reversal", "ema_pullback", "breakout_retest",
+                       "macd_divergence", "support_resistance", "price_action_levels",
+                       "swing_mtf", "smc"]
   min_stop_loss_pct: 0.5
   max_stop_loss_pct: 2.0
   min_target_pct: 0.5
