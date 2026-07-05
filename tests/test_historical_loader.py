@@ -55,22 +55,37 @@ def test_load_symbol_stores_deduped_candles(tmp_path):
     kite = MagicMock()
     kite.historical_data.return_value = _canned_rows()   # same rows each chunk
     loader = HistoricalLoader(kite, store, _cfg(tmp_path))
-    res = loader.load_symbol("RELIANCE", 738561)
+    res = loader.load_symbol("RELIANCE", 738561, end=datetime(2026, 6, 1, 16, 0))
     assert res["5min"] == 3                                # 2 chunks, deduped to 3
     assert store.candle_count("RELIANCE", "5min") == 3
     assert kite.historical_data.call_count == 2            # 120d / 100d = 2 chunks
 
 
-def test_load_symbol_skips_when_fresh(tmp_path):
+def test_load_symbol_skips_when_up_to_date(tmp_path):
     store = BacktestStore(str(tmp_path / "bt.db"))
     kite = MagicMock()
-    kite.historical_data.return_value = _canned_rows()
+    kite.historical_data.return_value = _canned_rows()    # last candle 2026-06-01
     loader = HistoricalLoader(kite, store, _cfg(tmp_path))
-    loader.load_symbol("RELIANCE", 738561)
+    end = datetime(2026, 6, 1, 16, 0)
+    loader.load_symbol("RELIANCE", 738561, end=end)
     kite.historical_data.reset_mock()
-    res = loader.load_symbol("RELIANCE", 738561)           # already fresh today
+    res = loader.load_symbol("RELIANCE", 738561, end=end)  # already have up to 06-01
     assert res["5min"] == 0
     kite.historical_data.assert_not_called()
+
+
+def test_delta_only_fetches_since_last(tmp_path):
+    store = BacktestStore(str(tmp_path / "bt.db"))
+    kite = MagicMock()
+    kite.historical_data.return_value = _canned_rows()    # stored up to 2026-06-01
+    loader = HistoricalLoader(kite, store, _cfg(tmp_path))
+    loader.load_symbol("RELIANCE", 738561, end=datetime(2026, 6, 1, 16, 0))
+    kite.historical_data.reset_mock()
+    # a later run should fetch only the delta window (from ~06-01), NOT a year back
+    loader.load_symbol("RELIANCE", 738561, end=datetime(2026, 6, 5, 16, 0))
+    assert kite.historical_data.called
+    frm = kite.historical_data.call_args.args[1]          # from_date
+    assert frm.date() >= datetime(2026, 5, 30).date()     # delta, not full lookback
 
 
 def test_load_symbol_force_refetches(tmp_path):
@@ -78,10 +93,11 @@ def test_load_symbol_force_refetches(tmp_path):
     kite = MagicMock()
     kite.historical_data.return_value = _canned_rows()
     loader = HistoricalLoader(kite, store, _cfg(tmp_path))
-    loader.load_symbol("RELIANCE", 738561)
+    end = datetime(2026, 6, 1, 16, 0)
+    loader.load_symbol("RELIANCE", 738561, end=end)
     kite.historical_data.reset_mock()
-    loader.load_symbol("RELIANCE", 738561, force=True)
-    assert kite.historical_data.call_count == 2            # refetched despite freshness
+    loader.load_symbol("RELIANCE", 738561, end=end, force=True)
+    assert kite.historical_data.call_count == 2            # full refetch despite freshness
 
 
 def test_retry_survives_transient_error(tmp_path):

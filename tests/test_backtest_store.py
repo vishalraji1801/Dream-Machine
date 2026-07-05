@@ -68,3 +68,12 @@ def test_clear(store):
 def test_empty_df_noop(store):
     assert store.upsert_candles("X", "5min", pd.DataFrame()) == 0
     assert store.upsert_candles("X", "5min", None) == 0
+
+
+def test_last_timestamp(store):
+    store.upsert_candles("RELIANCE", "5min", _df(["2026-06-01 09:15", "2026-06-01 09:20"]))
+    assert store.last_timestamp("RELIANCE", "5min") == pd.Timestamp("2026-06-01 09:20")
+
+
+def test_last_timestamp_none_when_absent(store):
+    assert store.last_timestamp("X", "5min") is None

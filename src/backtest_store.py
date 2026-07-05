@@ -126,3 +126,13 @@ class BacktestStore:
     def candle_count(self, symbol: str, timeframe: str) -> int:
         with self._connect() as con:
             return self._count(con, symbol, timeframe)
+
+    def last_timestamp(self, symbol: str, timeframe: str) -> Optional[pd.Timestamp]:
+        """Most recent stored candle timestamp for (symbol, timeframe), for delta loads."""
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT MAX(timestamp) AS ts FROM candles WHERE symbol=? AND timeframe=?",
+                (symbol, timeframe)).fetchone()
+        if not row or row["ts"] is None:
+            return None
+        return pd.to_datetime(row["ts"])
