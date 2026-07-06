@@ -4,11 +4,14 @@ cd /d "%~dp0"
 
 echo.
 echo =========================================
-echo  Trading Bot V1 — Starting...
+echo  Trading Bot — Starting...
 echo =========================================
 echo.
 
-.venv\Scripts\python.exe auth.py
+.venv\Scripts\python.exe bot.py status
+echo.
+
+.venv\Scripts\python.exe bot.py auth
 if errorlevel 1 (
     echo.
     echo Bot not started ^(auth failed or market closed — see message above^).
@@ -21,7 +24,7 @@ if errorlevel 1 (
 echo.
 echo Starting bot...
 echo.
-.venv\Scripts\python.exe main.py
+.venv\Scripts\python.exe bot.py run
 if errorlevel 1 (
     echo.
     echo Bot CRASHED — restarting in 15 seconds... ^(Ctrl+C to abort^)
