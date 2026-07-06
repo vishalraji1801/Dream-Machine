@@ -26,6 +26,7 @@ _PASSTHROUGH = {
     "backtest": "backtest_run.py",
     "validate": "validate.py",
     "sweep": "sweep.py",
+    "tune": "autotune.py",
 }
 
 

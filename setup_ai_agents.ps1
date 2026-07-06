@@ -20,8 +20,14 @@ $jobs = @(
     @{ Name = "TradingBot_AI_Weekly";      Agent = "weekly";     Time = "18:00"; Days = "SUN" }
 )
 
+# Weekly auto-tune (deterministic walk-forward sweep -> bounded overlay; it
+# invokes the Claude tuning reviewer itself when done). Runs before the weekly
+# researcher so the researcher sees the fresh tuning report.
+$autotune = @{ Name = "TradingBot_AutoTune"; Time = "16:30"; Days = "SUN" }
+
 if ($Remove) {
     foreach ($j in $jobs) { schtasks /Delete /TN $j.Name /F }
+    schtasks /Delete /TN $autotune.Name /F
     Write-Host "AI agent tasks removed."
     exit
 }
@@ -37,6 +43,12 @@ foreach ($j in $jobs) {
     } else {
         Write-Host "FAILED to register $($j.Name) (try an elevated PowerShell)"
     }
+}
+
+$tuneAction = "`"$py`" `"$(Join-Path $PSScriptRoot 'autotune.py')`""
+schtasks /Create /F /SC WEEKLY /D $autotune.Days /TN $autotune.Name /TR $tuneAction /ST $autotune.Time
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "Registered $($autotune.Name): $($autotune.Days) at $($autotune.Time) -> walk-forward auto-tune + AI review"
 }
 
 Write-Host ""
