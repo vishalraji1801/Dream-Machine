@@ -18,11 +18,44 @@ from src.logger import get_logger
 
 logger = get_logger("ai_overlay")
 
+# Numeric strategy params the tuner/strategist may adjust, with hard bounds.
+# Anything outside these ranges rejects the WHOLE overlay.
+_STRATEGY_BOUNDS = {
+    "rsi_entry_threshold": (50, 80),
+    "volume_multiplier": (1.0, 5.0),
+    "vwap_stretch_pct": (0.5, 4.0),
+    "rsi_overbought": (60, 90),
+    "rsi_oversold": (10, 40),
+    "supertrend_period": (5, 30),
+    "supertrend_mult": (1.0, 5.0),
+    "atr_period": (5, 30),
+    "atr_sl_mult": (0.5, 4.0),
+    "atr_target_mult": (1.0, 8.0),
+    "ec_fast": (5, 100),
+    "ec_slow": (10, 300),
+    "rsi_rev_period": (2, 14),
+    "rsi_rev_oversold": (5, 30),
+    "rsi_rev_overbought": (70, 95),
+    "pullback_ema": (10, 100),
+    "pullback_tol_pct": (0.1, 1.0),
+    "br_lookback": (5, 60),
+    "br_tol_pct": (0.1, 1.0),
+    "macd_div_lookback": (10, 40),
+    "sr_lookback": (10, 60),
+    "sr_tol_pct": (0.1, 1.0),
+    "pa_lookback": (10, 40),
+    "pa_tol_pct": (0.1, 1.0),
+    "mtf_long_ema": (30, 200),
+    "mtf_short_ema": (5, 50),
+    "smc_lookback": (5, 40),
+}
+_ORB_END_ALLOWED = {"09:30", "09:45", "10:00"}
+
 # Only these top-level keys may be adjusted by an overlay. Capital, position caps,
 # circuit breakers, product type, watchlist etc. are deliberately NOT adjustable.
 _ADJUSTABLE = {
-    "strategy": {"name", "rsi_entry_threshold", "volume_multiplier",
-                 "regime_filter_enabled"},
+    "strategy": {"name", "regime_filter_enabled", "orb_end", "sl_mode",
+                 *_STRATEGY_BOUNDS},
     "risk": {"stop_loss_pct", "target_pct", "trailing_sl_enabled",
              "max_trades_per_day"},
     "trading": {"entry_start_time", "entry_end_time"},
@@ -87,10 +120,15 @@ def _validate(overlay: dict, cfg: dict) -> Optional[str]:
         allowed = ai.get("allowed_strategies", [])
         if strat["name"] not in allowed:
             return f"strategy.name '{strat['name']}' not in allowed_strategies"
-    if "rsi_entry_threshold" in strat and not (50 <= strat["rsi_entry_threshold"] <= 80):
-        return "strategy.rsi_entry_threshold out of bounds (50-80)"
-    if "volume_multiplier" in strat and not (1.0 <= strat["volume_multiplier"] <= 5.0):
-        return "strategy.volume_multiplier out of bounds (1.0-5.0)"
+    if "orb_end" in strat and str(strat["orb_end"]) not in _ORB_END_ALLOWED:
+        return f"strategy.orb_end '{strat['orb_end']}' not in {sorted(_ORB_END_ALLOWED)}"
+    if "sl_mode" in strat and strat["sl_mode"] not in ("pct", "atr"):
+        return "strategy.sl_mode must be 'pct' or 'atr'"
+    for key, (lo, hi) in _STRATEGY_BOUNDS.items():
+        if key in strat:
+            value = strat[key]
+            if not isinstance(value, (int, float)) or not (lo <= value <= hi):
+                return f"strategy.{key} out of bounds ({lo}-{hi})"
 
     risk = overlay.get("risk", {})
     if "stop_loss_pct" in risk and not (

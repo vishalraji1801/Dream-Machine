@@ -25,7 +25,7 @@ def test_build_env_preserves_other_vars(monkeypatch):
 
 
 def test_agents_registry_has_offline_agents():
-    assert set(run_ai_agent.AGENTS) == {"premarket", "postmarket", "weekly", "backtest"}
+    assert set(run_ai_agent.AGENTS) == {"premarket", "postmarket", "weekly", "backtest", "tune"}
     for cfg in run_ai_agent.AGENTS.values():
         # offline analysts: no order-placing tools, prompt file declared
         assert "prompt" in cfg and "tools" in cfg
@@ -38,7 +38,6 @@ def test_prompt_files_exist():
 
 
 def test_find_claude_falls_back_to_local_bin(monkeypatch, tmp_path):
-    import shutil
     # nothing on PATH...
     monkeypatch.setattr(run_ai_agent.shutil, "which", lambda name: None)
     # ...but a managed install exists under ~/.local/bin

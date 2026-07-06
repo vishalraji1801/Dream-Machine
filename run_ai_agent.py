@@ -25,6 +25,7 @@ AGENTS = {
     "postmarket": {"prompt": "ai/prompts/postmarket_analyst.md",   "tools": "Read,Write,Bash"},
     "weekly":     {"prompt": "ai/prompts/weekly_researcher.md",    "tools": "Read,Write,Bash"},
     "backtest":   {"prompt": "ai/prompts/backtest_analyst.md",     "tools": "Read,Write,Bash"},
+    "tune":       {"prompt": "ai/prompts/tuning_reviewer.md",      "tools": "Read,Write,Bash"},
 }
 
 
