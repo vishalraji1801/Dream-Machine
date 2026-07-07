@@ -121,8 +121,7 @@ def _headless_login(api_key: str, user_id: str, password: str, totp: str) -> str
         data={"user_id": user_id, "password": password},
         timeout=15,
     )
-    r.raise_for_status()
-    body = r.json()
+    body = _json_or_raise(r, "login")
     if body.get("status") != "success":
         raise RuntimeError(f"Login failed: {body.get('message', body)}")
     request_id = body["data"]["request_id"]
@@ -138,10 +137,13 @@ def _headless_login(api_key: str, user_id: str, password: str, totp: str) -> str
         },
         timeout=15,
     )
-    r.raise_for_status()
-    body = r.json()
+    body = _json_or_raise(r, "2FA")
     if body.get("status") != "success":
-        raise RuntimeError(f"2FA failed — wrong TOTP? ({body.get('message', body)})")
+        raise RuntimeError(
+            f"2FA rejected by Kite: {body.get('message', body)}\n"
+            "Most common cause: the TOTP expired (codes last ~30s). Retry with a "
+            "FRESH code — wait for the next one, then type it immediately."
+        )
 
     # Step 3: OAuth redirect — capture request_token from callback URL
     connect_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"
@@ -155,6 +157,15 @@ def _headless_login(api_key: str, user_id: str, password: str, totp: str) -> str
             "Check that your Kite Connect app redirect URL is set in the developer console."
         )
     return token
+
+
+def _json_or_raise(r, step: str) -> dict:
+    """Surface Kite's real error message even on 4xx (raise_for_status hides it)."""
+    try:
+        return r.json()
+    except ValueError:
+        r.raise_for_status()
+        raise RuntimeError(f"{step}: unexpected non-JSON response (HTTP {r.status_code})")
 
 
 def _capture_callback_url(session: req.Session, url: str) -> str:
