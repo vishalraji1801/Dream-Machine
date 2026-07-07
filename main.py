@@ -151,8 +151,8 @@ def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
     """One complete 5-minute trading cycle (FR-22).
     allow_entries=False (Telegram /pause) manages positions but takes no new trades."""
     risk = ctx["risk"]
-    triggered, reason = risk.check_circuit_breakers()
-    if triggered:
+    ok, reason = risk.check_circuit_breakers()
+    if not ok:
         ctx["alert"].send("circuit_breaker", reason=reason)
         logger.warning(f"Circuit breaker active: {reason} — skipping cycle")
         return

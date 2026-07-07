@@ -13,7 +13,7 @@ from datetime import datetime
 
 def _make_ctx(
     risk_halted=False,
-    circuit_breaker=(False, ""),
+    circuit_breaker=(True, ""),   # (ok, reason) — True means all clear
     open_positions=None,
     quotes=None,
     candles=None,
@@ -251,10 +251,37 @@ def test_startup_uses_order_executor_when_paper_disabled():
 # ── trading_cycle ─────────────────────────────────────────────────────────────
 
 def test_cycle_skips_on_circuit_breaker():
-    ctx = _make_ctx(circuit_breaker=(True, "Daily loss limit hit"))
+    ctx = _make_ctx(circuit_breaker=(False, "Daily loss limit hit"))  # ok=False -> tripped
     main.trading_cycle(ctx)
     ctx["alert"].send.assert_called_once_with("circuit_breaker", reason="Daily loss limit hit")
     ctx["fetcher"].get_quotes.assert_not_called()
+
+
+def test_cycle_with_real_risk_manager_runs_when_clear():
+    """Integration guard: mocks hid an inverted (ok, reason) contract once."""
+    from src.risk_manager import RiskManager
+    ctx = _make_ctx()
+    ctx["risk"] = RiskManager(ctx["cfg"])          # real, freshly reset -> all clear
+    with patch("main._manage_open_positions") as mock_manage, \
+         patch("main._scan_entries") as mock_scan:
+        main.trading_cycle(ctx)
+    mock_manage.assert_called_once()
+    mock_scan.assert_called_once()
+    ctx["alert"].send.assert_not_called()          # no circuit_breaker alert
+
+
+def test_cycle_with_real_risk_manager_halts_on_breach():
+    from src.risk_manager import RiskManager
+    ctx = _make_ctx()
+    risk = RiskManager(ctx["cfg"])
+    risk.record_pnl(-ctx["cfg"]["risk"]["max_daily_loss"] - 1)   # breach daily loss
+    ctx["risk"] = risk
+    with patch("main._manage_open_positions") as mock_manage, \
+         patch("main._scan_entries") as mock_scan:
+        main.trading_cycle(ctx)
+    mock_manage.assert_not_called()
+    mock_scan.assert_not_called()
+    assert ctx["alert"].send.call_args.args[0] == "circuit_breaker"
 
 
 def test_cycle_skips_entries_when_paused():
@@ -267,7 +294,7 @@ def test_cycle_skips_entries_when_paused():
 
 
 def test_cycle_calls_manage_positions_and_scan():
-    ctx = _make_ctx(circuit_breaker=(False, ""))
+    ctx = _make_ctx(circuit_breaker=(True, ""))
     with patch("main._manage_open_positions") as mock_manage, \
          patch("main._scan_entries") as mock_scan:
         main.trading_cycle(ctx)
