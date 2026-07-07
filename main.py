@@ -689,6 +689,7 @@ def run() -> int:
     stop_reason = "normal shutdown"
     exit_code = 0
     hb = {"last": time.monotonic()}
+    eod_done = None  # date of the last completed EOD — square off/summary once per day
     try:
         while not shutdown["requested"] and not stop_event.is_set():
             _maybe_heartbeat(ctx, hb)
@@ -698,10 +699,11 @@ def run() -> int:
                 time.sleep(300)
                 continue
             if not risk.is_market_open():
-                if positions.is_square_off_time():
+                if positions.is_square_off_time() and eod_done != datetime.now().date():
                     eod_square_off(ctx)
                     _send_daily_summary(ctx)
                     _save_state(ctx)
+                    eod_done = datetime.now().date()
                     logger.info("EOD complete — waiting for next session")
                 time.sleep(30)
                 continue

@@ -552,6 +552,31 @@ def test_run_stop_event_exits_loop():
     assert call_count["n"] == 0  # stop_event set before the first cycle
 
 
+def test_run_eod_summary_sent_once_per_day():
+    """After square-off time, the closed-market loop must not re-send the EOD
+    report every 30s (day-1 paper bug: 8 duplicate Telegram summaries)."""
+    ctx = _make_ctx()
+    ctx["risk"].is_market_open.return_value = False
+    ctx["positions"].is_square_off_time.return_value = True   # stays True after 15:15
+
+    calls = {"n": 0}
+    def _sleep(_):
+        calls["n"] += 1
+        if calls["n"] >= 4:                                   # 4 closed-market loops
+            raise KeyboardInterrupt
+
+    with patch("main.startup", return_value=ctx), \
+         patch("main.trading_cycle"), \
+         patch("main.eod_square_off"), \
+         patch("main._send_daily_summary") as mock_summary, \
+         patch("main.TelegramController", return_value=MagicMock()), \
+         patch("main.time.sleep", side_effect=_sleep):
+        main.run()
+
+    # once in the loop + once in the shutdown finally — NOT once per iteration
+    assert mock_summary.call_count == 2
+
+
 # ── signal_generated alert ────────────────────────────────────────────────────
 
 def test_scan_sends_signal_generated_alert_on_buy():
