@@ -52,7 +52,7 @@ trading:
     - TRENT
     - UPL
     - BAJAJ-AUTO
-  timeframe: "5minute"
+  timeframe: "15minute"   # paper campaign: best risk-adjusted cell in the 1yr universe backtest
   market_open: "09:15"
   market_close: "15:30"
   square_off_time: "15:15"
