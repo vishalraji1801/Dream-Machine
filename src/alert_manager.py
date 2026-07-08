@@ -9,7 +9,7 @@ logger = get_logger("alert_manager")
 
 _TEMPLATES = {
     "bot_started":        "Trading Bot ONLINE\nMarket opens in {minutes} minutes.",
-    "order_placed":       "{direction} | {symbol} | Qty: {qty} | Price: {price} | Order ID: {order_id}",
+    "order_placed":       "{direction} {symbol} | Qty: {qty} @ {price} ({order_type}) | SL: {sl} | Target: {target} | ID: {order_id}",
     "order_filled":       "Order FILLED | {symbol} | Actual Price: {actual_price} | Slippage: {slippage}",
     "order_rejected":     "ALERT: Order REJECTED | {symbol} | Reason: {reason}",
     "sl_hit":             "SL Hit | {symbol} | Entry: {entry} | Exit: {exit_price} | Loss: Rs.{loss}",
@@ -17,7 +17,7 @@ _TEMPLATES = {
     "circuit_breaker":    "HALT: {reason}. All positions squared off.",
     "critical_error":     "ERROR: [{module}] {message}. Check logs immediately.",
     "daily_summary":      "EOD Report | Trades: {trades} | Profit: Rs.{profit} | Loss: Rs.{loss} | Net P&L: Rs.{net_pnl}",
-    "signal_generated":   "Signal: {direction} {symbol} | Entry: {entry} | SL: {sl} | Target: {target}",
+    "signal_generated":   "Signal: {direction} {symbol} @ {entry} | SL: {sl} | Target: {target} | {action}",
     "order_partial":      "Order PARTIAL FILL | {symbol} | {filled}/{requested} @ {actual_price} — remainder cancelled",
     "bot_stopped":        "Trading Bot OFFLINE. Reason: {reason}",
     "api_error":          "API ERROR: [{module}] {message}. Bot will retry.",
@@ -25,9 +25,11 @@ _TEMPLATES = {
 
 
 class AlertManager:
-    def __init__(self, bot_token: str, chat_id: str):
+    def __init__(self, bot_token: str, chat_id: str, tag: str = ""):
+        """tag: mode label ('PAPER'/'LIVE') prefixed to every outbound message."""
         self._url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         self._chat_id = chat_id
+        self._tag = f"[{tag}] " if tag else ""
 
     def send(self, event: str, **kwargs) -> bool:
         """Send a Telegram alert for a named event. Returns True on success."""
@@ -47,6 +49,7 @@ class AlertManager:
         return self._post(message)
 
     def _post(self, text: str) -> bool:
+        text = self._tag + text
         try:
             resp = requests.post(
                 self._url,

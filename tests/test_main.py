@@ -597,7 +597,49 @@ def test_scan_sends_signal_generated_alert_on_buy():
         entry=ctx["_mock_signal"].entry_price,
         sl=ctx["_mock_signal"].stop_loss,
         target=ctx["_mock_signal"].target,
+        action="ENTERING",
     )
+
+
+def test_blocked_signal_alert_carries_reason_and_dedupes():
+    """Day-2 bug: blocked signals re-alerted every cycle with no explanation."""
+    import pandas as pd
+    ctx = _make_ctx(
+        quotes={"RELIANCE": {"ltp": 2850.0}, "TCS": {"ltp": 3500.0}},
+        candles=pd.DataFrame({"c": [1]}),
+        signal_direction="SELL",
+        pre_trade_ok=False,   # blocked (e.g. margin)
+    )
+    ctx["_mock_signal"].direction = "SELL"
+    with patch("main._get_regime", return_value="BEARISH"), \
+         patch("main.generate_signal", return_value=ctx["_mock_signal"]):
+        main._scan_entries(ctx)
+        first_count = ctx["alert"].send.call_count
+        main._scan_entries(ctx)   # same cycle conditions repeat
+    # outcome present in the alert
+    sig_calls = [c for c in ctx["alert"].send.call_args_list
+                 if c.args and c.args[0] == "signal_generated"]
+    assert sig_calls and "SKIPPED" in sig_calls[0].kwargs["action"]
+    # and no re-alert on the second scan
+    assert ctx["alert"].send.call_count == first_count
+
+
+def test_paper_margin_is_simulated_from_capital():
+    """Day-2 bug: paper mode used REAL account margin (Rs.0) and blocked everything."""
+    ctx = _make_ctx()                       # source="paper" in _make_ctx
+    assert main._get_margin(ctx) == 500000.0
+    ctx["kite"].margins.assert_not_called()  # real account not consulted
+    # open exposure reduces simulated margin
+    pos = _make_position("RELIANCE", "BUY", entry=2800.0, qty=10)  # 28k exposure
+    ctx["positions"].get_open_positions.return_value = [pos]
+    assert main._get_margin(ctx) == 500000.0 - 28000.0
+
+
+def test_live_margin_still_reads_kite():
+    ctx = _make_ctx()
+    ctx["source"] = "live"
+    assert main._get_margin(ctx) == 100000.0
+    ctx["kite"].margins.assert_called_once()
 
 
 # ── KiteTicker / streamer integration ────────────────────────────────────────
