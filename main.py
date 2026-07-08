@@ -66,9 +66,11 @@ def startup() -> dict:
 
     kite = load_kite_session()
 
+    paper_flag = cfg.get("paper_trading", {}).get("enabled", False)
     alert = AlertManager(
         bot_token=os.getenv("TELEGRAM_BOT_TOKEN"),
         chat_id=os.getenv("TELEGRAM_CHAT_ID"),
+        tag="PAPER" if paper_flag else "LIVE",
     )
 
     # AI overlay (P5) — validated sandbox written by the scheduled Claude strategist.
@@ -325,25 +327,28 @@ def _scan_entries(ctx: dict) -> None:
                        or (signal.direction == "SELL" and regime != "BEARISH")):
             logger.info(f"{symbol}: {signal.direction} signal against {regime} regime — skipped")
             _db_signal(ctx, symbol, signal.direction, taken=False, reason="regime_mismatch")
+            _alert_signal(ctx, symbol, signal, f"SKIPPED: against {regime} regime")
             continue
-        ctx["alert"].send("signal_generated", direction=signal.direction, symbol=symbol,
-                          entry=signal.entry_price, sl=signal.stop_loss, target=signal.target)
         qty = risk.calculate_quantity(signal.entry_price, signal.stop_loss)
         if qty <= 0:
             _db_signal(ctx, symbol, signal.direction, taken=False, reason="zero_quantity")
+            _alert_signal(ctx, symbol, signal, "SKIPPED: zero quantity")
             continue
         order_value = signal.entry_price * qty
         ok, block_reason = risk.check_pre_trade(order_value, margin, positions.open_count())
         if not ok:
             logger.info(f"Pre-trade blocked for {symbol}: {block_reason}")
             _db_signal(ctx, symbol, signal.direction, taken=False, reason=block_reason)
+            _alert_signal(ctx, symbol, signal, f"SKIPPED: {block_reason}")
             continue
         sector_ok, sector_reason = risk.check_sector_cap(symbol, list(open_symbols))
         if not sector_ok:
             logger.info(f"Sector cap blocked {symbol}: {sector_reason}")
             _db_signal(ctx, symbol, signal.direction, taken=False, reason=sector_reason)
+            _alert_signal(ctx, symbol, signal, f"SKIPPED: {sector_reason}")
             continue
         _db_signal(ctx, symbol, signal.direction, taken=True)
+        _alert_signal(ctx, symbol, signal, "ENTERING")
         _execute_entry(ctx, symbol, signal, qty)
         break  # one entry per cycle to stay within position limits
 
@@ -405,7 +410,13 @@ def _get_quotes(ctx: dict, symbols: list) -> dict | None:
 
 
 def _get_margin(ctx: dict) -> float:
-    """Fetch available equity margin from Kite. Returns 0.0 on error."""
+    """Available margin. PAPER mode simulates it from configured capital minus
+    open exposure — the real account balance is irrelevant to a simulation
+    (day-2 bug: real margin was Rs.0, so every paper entry was blocked)."""
+    if ctx.get("source") == "paper":
+        open_value = sum(p.entry_price * p.quantity
+                         for p in ctx["positions"].get_open_positions())
+        return max(0.0, float(ctx["cfg"]["risk"]["total_capital"]) - open_value)
     try:
         m = ctx["kite"].margins("equity")
         return float(m.get("available", {}).get("live_balance", 0.0))
@@ -511,7 +522,8 @@ def _execute_entry(ctx: dict, symbol: str, signal, qty: int) -> None:
         positions.set_gtt_id(symbol, gtt_id)
 
     alert.send("order_placed", direction=signal.direction, symbol=symbol,
-               qty=actual_qty, price=actual_price, order_id=order_id)
+               qty=actual_qty, price=actual_price, order_type=order_type,
+               sl=signal.stop_loss, target=signal.target, order_id=order_id)
     alert.send("order_filled", symbol=symbol, actual_price=actual_price, slippage=slippage)
     logger.info(f"Entry: {signal.direction} {actual_qty}x{symbol} @ {actual_price} | SL={signal.stop_loss}")
 
@@ -591,6 +603,23 @@ def _db_signal(ctx: dict, symbol: str, direction: str, taken: bool, reason: str 
                      strategy=ctx["cfg"]["strategy"].get("name"))
 
 
+def _alert_signal(ctx: dict, symbol: str, signal, action: str) -> None:
+    """Signal alert with its OUTCOME, deduped per (symbol, direction, action)
+    per day — a persisting-but-blocked signal must not spam every cycle."""
+    log = ctx.setdefault("signal_alert_log", {"date": None, "sent": set()})
+    today = datetime.now().date()
+    if log["date"] != today:
+        log["date"] = today
+        log["sent"] = set()
+    key = (symbol, signal.direction, action)
+    if key in log["sent"]:
+        return
+    log["sent"].add(key)
+    ctx["alert"].send("signal_generated", direction=signal.direction, symbol=symbol,
+                      entry=signal.entry_price, sl=signal.stop_loss,
+                      target=signal.target, action=action)
+
+
 def _relay_ai_outbox(ctx: dict) -> None:
     """Send anything the scheduled Claude agents left in the Telegram outbox, then clear it."""
     path = ctx["cfg"].get("ai", {}).get("telegram_outbox")
@@ -613,12 +642,22 @@ def _maybe_heartbeat(ctx: dict, hb: dict) -> None:
     if now - hb["last"] < interval:
         return
     hb["last"] = now
-    open_count = len(ctx["positions"].get_open_positions())
+    open_pos = ctx["positions"].get_open_positions()
     streamer = ctx.get("streamer")
     stream_state = "connected" if (streamer and streamer.is_connected) else "disconnected"
+    detail = ""
+    if open_pos:
+        quotes = _get_quotes(ctx, [p.symbol for p in open_pos]) or {}
+        parts, unrealized = [], 0.0
+        for p in open_pos:
+            ltp = quotes.get(p.symbol, {}).get("ltp", p.entry_price)
+            u = p.unrealized_pnl(ltp)
+            unrealized += u
+            parts.append(f"{p.direction} {p.quantity}x{p.symbol} @ {p.entry_price} ({u:+.0f})")
+        detail = f"\nOpen: {'; '.join(parts)}\nUnrealized: Rs.{unrealized:+.2f}"
     ctx["alert"].send_raw(
-        f"Heartbeat: alive | {open_count} open positions | "
-        f"streamer {stream_state} | P&L Rs.{ctx['risk']._daily_pnl:.2f}"
+        f"Heartbeat: alive | {len(open_pos)} open positions | "
+        f"streamer {stream_state} | realized P&L Rs.{ctx['risk']._daily_pnl:.2f}{detail}"
     )
 
 
@@ -665,15 +704,21 @@ def run() -> int:
 
     def _status_message() -> str:
         open_pos = positions.get_open_positions()
-        pos_lines = "\n".join(
-            f"  {p.symbol} {p.direction} @ {p.entry_price:.2f} | SL={p.stop_loss:.2f} | Target={p.target:.2f}"
-            for p in open_pos
-        ) or "  None"
+        quotes = (_get_quotes(ctx, [p.symbol for p in open_pos]) or {}) if open_pos else {}
+        lines, unrealized = [], 0.0
+        for p in open_pos:
+            ltp = quotes.get(p.symbol, {}).get("ltp", p.entry_price)
+            u = p.unrealized_pnl(ltp)
+            unrealized += u
+            lines.append(f"  {p.direction} {p.quantity}x{p.symbol} @ {p.entry_price:.2f} | "
+                         f"LTP {ltp:.2f} | SL {p.stop_loss:.2f} | Tgt {p.target:.2f} | {u:+.0f}")
+        pos_block = "\n".join(lines) or "  None"
         return (
             f"Bot Status{' — PAUSED' if pause_event.is_set() else ''}\n"
             f"Market: {ctx['calendar'].status_text()}\n"
-            f"Open positions ({len(open_pos)}):\n{pos_lines}\n"
-            f"Daily P&L: Rs.{risk._daily_pnl:.2f}\n"
+            f"Open positions ({len(open_pos)}):\n{pos_block}\n"
+            f"Unrealized P&L: Rs.{unrealized:+.2f}\n"
+            f"Realized P&L today: Rs.{risk._daily_pnl:+.2f}\n"
             f"Trades today: {risk._trades_today}"
         )
 
