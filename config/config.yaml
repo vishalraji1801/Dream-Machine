@@ -146,6 +146,13 @@ scheduler:
   heartbeat_interval_minutes: 60
   max_tick_age_seconds: 30   # treat a streamed tick older than this as no-data
 
+data_feed:                   # tick-built candles (SCRUM-106): zero per-cycle REST
+  candles_from_ticks: true
+  seed_on_start: true        # one REST fetch per symbol at startup seeds history
+  seed_lookback_days: 3
+  min_bars: 30               # REST fallback until this many bars exist per symbol
+  max_bars: 120
+
 ai:
   overlay_enabled: true                      # apply a validated AI overlay at startup
   overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist

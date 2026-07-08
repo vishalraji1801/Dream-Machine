@@ -28,6 +28,7 @@ from src.risk_manager import RiskManager
 from src.scanner import rank as scanner_rank
 from src.state_store import StateStore
 from src.strategy import generate_signal, market_regime
+from src.tick_candle_builder import TickCandleBuilder
 from src.universe_builder import UniverseBuilder
 from src.telegram_controller import TelegramController
 from src.trade_db import TradeDB
@@ -104,9 +105,28 @@ def startup() -> dict:
     if not fetcher.load_instruments(symbols):
         raise RuntimeError("Instrument load failed — cannot start without token map")
 
+    # Tick-built candles (SCRUM-106): seed closed bars once via REST, then the
+    # WebSocket keeps them current — no per-cycle REST candle calls.
+    feed = cfg.get("data_feed", {})
+    candle_builder = None
+    if feed.get("candles_from_ticks"):
+        tf_seconds = {"minute": 60, "5minute": 300, "15minute": 900,
+                      "30minute": 1800, "60minute": 3600}.get(cfg["trading"]["timeframe"], 900)
+        candle_builder = TickCandleBuilder(interval_seconds=tf_seconds,
+                                           max_bars=feed.get("max_bars", 120))
+        if feed.get("seed_on_start", True):
+            seeded = 0
+            for sym in symbols:
+                df = fetcher.get_candles(sym, lookback_days=feed.get("seed_lookback_days", 3))
+                if df is not None and not df.empty:
+                    if candle_builder.seed(sym, df, now_epoch=time.time()):
+                        seeded += 1
+            logger.info(f"Candle builder seeded from REST: {seeded}/{len(symbols)} symbols")
+
     streamer = DataStreamer(
         kite.api_key, kite.access_token, fetcher._instruments,
         max_tick_age_seconds=cfg["scheduler"].get("max_tick_age_seconds", 0),
+        candle_builder=candle_builder,
     )
     streamer.connect()
 
@@ -132,6 +152,7 @@ def startup() -> dict:
         "calendar": MarketCalendar(cfg),
         "events": EventCalendar(cfg),
         "universe_symbols": universe_symbols,
+        "candles": candle_builder,
     }
 
     saved = ctx["state"].load()
@@ -268,7 +289,6 @@ def _scan_entries(ctx: dict) -> None:
     cfg = ctx["cfg"]
     risk = ctx["risk"]
     positions = ctx["positions"]
-    fetcher = ctx["fetcher"]
 
     if not _within_entry_window(cfg):
         logger.info("Outside entry window — managing positions only")
@@ -317,7 +337,7 @@ def _scan_entries(ctx: dict) -> None:
             continue
         if not _spread_ok(symbol, quotes[symbol], cfg):
             continue
-        df = fetcher.get_candles(symbol)
+        df = _get_candles(ctx, symbol)
         if df is None or df.empty:
             continue
         signal = generate_signal(symbol, df, cfg["strategy"])
@@ -373,7 +393,7 @@ def _get_regime(ctx: dict):
     if not cfg["strategy"].get("regime_filter_enabled"):
         return None
     index_symbol = cfg["strategy"].get("regime_index_symbol", "NIFTY 50")
-    df = ctx["fetcher"].get_candles(index_symbol)
+    df = _get_candles(ctx, index_symbol)
     if df is None or df.empty:
         logger.warning("Regime filter: index candles unavailable — filter skipped")
         return None
@@ -396,6 +416,17 @@ def _spread_ok(symbol: str, quote: dict, cfg: dict) -> bool:
         logger.info(f"{symbol}: spread {spread_pct:.3f}% > {max_spread}% — entry skipped")
         return False
     return True
+
+
+def _get_candles(ctx: dict, symbol: str):
+    """Candles for signal generation: tick-built once warm (zero REST calls),
+    REST fallback while warming up or if the feed is disabled (SCRUM-106)."""
+    builder = ctx.get("candles")
+    if builder is not None:
+        min_bars = ctx["cfg"].get("data_feed", {}).get("min_bars", 30)
+        if builder.bar_count(symbol) >= min_bars:
+            return builder.get_candles(symbol)
+    return ctx["fetcher"].get_candles(symbol)
 
 
 def _get_quotes(ctx: dict, symbols: list) -> dict | None:

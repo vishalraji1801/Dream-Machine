@@ -903,6 +903,37 @@ def test_run_idles_on_holiday():
     ctx["risk"].is_market_open.assert_not_called()  # calendar short-circuits
 
 
+# ── SCRUM-106: tick-built candle provider ─────────────────────────────────────
+
+def test_get_candles_uses_builder_when_warm():
+    import pandas as pd
+    ctx = _make_ctx()
+    builder = MagicMock()
+    builder.bar_count.return_value = 60
+    builder.get_candles.return_value = pd.DataFrame({"close": [1.0]})
+    ctx["candles"] = builder
+    df = main._get_candles(ctx, "RELIANCE")
+    builder.get_candles.assert_called_once_with("RELIANCE")
+    ctx["fetcher"].get_candles.assert_not_called()
+    assert len(df) == 1
+
+
+def test_get_candles_falls_back_to_rest_while_warming():
+    ctx = _make_ctx()
+    builder = MagicMock()
+    builder.bar_count.return_value = 5              # below min_bars (30)
+    ctx["candles"] = builder
+    main._get_candles(ctx, "RELIANCE")
+    ctx["fetcher"].get_candles.assert_called_once_with("RELIANCE")
+
+
+def test_get_candles_rest_when_feed_disabled():
+    ctx = _make_ctx()                               # no "candles" key -> None
+    ctx["candles"] = None
+    main._get_candles(ctx, "RELIANCE")
+    ctx["fetcher"].get_candles.assert_called_once()
+
+
 # ── V2 P3: dynamic universe scanner hook ──────────────────────────────────────
 
 def test_scan_uses_scanner_shortlist_when_universe_enabled():
