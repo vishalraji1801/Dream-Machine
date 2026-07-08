@@ -42,11 +42,33 @@ class TelegramController:
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
+        self._flush_backlog()
         self._thread = threading.Thread(
             target=self._poll_loop, daemon=True, name="telegram-ctrl"
         )
         self._thread.start()
         logger.info("Telegram controller started — listening for /stop and /status")
+
+    def _flush_backlog(self) -> None:
+        """Discard commands sent while the bot was offline (Telegram retains
+        updates ~24h; a /stop from yesterday must not kill today's session)."""
+        try:
+            resp = requests.get(
+                f"{self._base}/getUpdates",
+                params={"offset": -1, "timeout": 0}, timeout=10,
+            )
+            resp.raise_for_status()
+            results = resp.json().get("result", [])
+            if results:
+                self._offset = results[-1]["update_id"] + 1
+                # acknowledge server-side so the stale updates are dropped for good
+                requests.get(
+                    f"{self._base}/getUpdates",
+                    params={"offset": self._offset, "timeout": 0}, timeout=10,
+                )
+                logger.warning("Flushed stale Telegram command(s) from before startup")
+        except Exception as exc:
+            logger.warning(f"Telegram backlog flush failed (continuing): {exc}")
 
     def stop(self) -> None:
         if self._thread and self._thread.is_alive():

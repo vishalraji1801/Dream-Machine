@@ -233,3 +233,39 @@ def test_reply_failure_does_not_crash(ctrl):
          patch("src.telegram_controller.requests.post",
                side_effect=req.exceptions.ConnectionError("timeout")):
         ctrl._poll_once()  # should not raise
+
+
+# ── startup backlog flush (day-2 paper bug: yesterday's /stop replayed) ───────
+
+def test_start_flushes_stale_stop_command(stop_event):
+    """A /stop sent while the bot was offline must NOT shut down a new session."""
+    ctrl = TelegramController("tok", "123456", stop_event)
+    stale = MagicMock()
+    stale.json.return_value = _updates("/stop", start_id=42)
+    stale.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=stale) as mg, \
+         patch("src.telegram_controller.time.sleep"):
+        ctrl._flush_backlog()
+    assert ctrl._offset == 43                 # skipped past the stale update
+    assert not stop_event.is_set()            # and did NOT act on it
+    # second call acknowledges server-side with the advanced offset
+    acked = [c for c in mg.call_args_list if c.kwargs["params"].get("offset") == 43]
+    assert acked
+
+
+def test_flush_with_empty_backlog_keeps_offset(stop_event):
+    ctrl = TelegramController("tok", "123456", stop_event)
+    empty = MagicMock()
+    empty.json.return_value = {"result": []}
+    empty.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=empty):
+        ctrl._flush_backlog()
+    assert ctrl._offset == 0
+
+
+def test_flush_failure_does_not_block_start(stop_event):
+    import requests as req
+    ctrl = TelegramController("tok", "123456", stop_event)
+    with patch("src.telegram_controller.requests.get",
+               side_effect=req.exceptions.ConnectionError("down")):
+        ctrl._flush_backlog()               # must not raise
