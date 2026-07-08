@@ -21,14 +21,18 @@ class DataStreamer:
     """
 
     def __init__(self, api_key: str, access_token: str, instruments: dict[str, int],
-                 max_tick_age_seconds: float = 0.0):
+                 max_tick_age_seconds: float = 0.0, candle_builder=None):
         """
         instruments: {symbol: instrument_token} map (from DataFetcher._instruments).
         max_tick_age_seconds: if > 0, a buffered tick older than this is treated as
         no-data (stale-tick guard) so the bot never trades on a frozen feed.
+        candle_builder: optional TickCandleBuilder — every tick is folded into
+        local trading-TF candles so the cycle needs no REST candle calls.
         """
         self._ticker = KiteTicker(api_key, access_token)
         self._symbol_to_token = instruments
+        self._token_to_symbol = {v: k for k, v in instruments.items()}
+        self._candles = candle_builder
         self._ticks: dict[int, dict] = {}
         self._tick_time: dict[int, float] = {}
         self._max_tick_age = max_tick_age_seconds
@@ -109,6 +113,14 @@ class DataStreamer:
                 token = tick["instrument_token"]
                 self._ticks[token] = tick
                 self._tick_time[token] = now
+        if self._candles is not None:
+            for tick in ticks:
+                symbol = self._token_to_symbol.get(tick["instrument_token"])
+                if symbol is None:
+                    continue
+                self._candles.add_tick(
+                    symbol, tick.get("last_price", 0.0),
+                    tick.get("volume_traded", tick.get("volume", 0.0)) or 0.0, now)
 
     def _on_close(self, ws, code, reason):
         self._connected = False

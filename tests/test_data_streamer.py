@@ -176,3 +176,23 @@ def test_on_error_does_not_raise(streamer):
 
 def test_on_reconnect_does_not_raise(streamer):
     streamer._on_reconnect(MagicMock(), 3)
+
+
+# ── SCRUM-106: ticks feed the candle builder ──────────────────────────────────
+
+def test_on_ticks_feeds_candle_builder(instruments):
+    builder = MagicMock()
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments, candle_builder=builder)
+    tick = _make_tick(738561, ltp=2851.0)
+    tick["volume_traded"] = 123456
+    ds._on_ticks(MagicMock(), [tick])
+    builder.add_tick.assert_called_once()
+    args = builder.add_tick.call_args.args
+    assert args[0] == "RELIANCE" and args[1] == 2851.0 and args[2] == 123456
+
+
+def test_on_ticks_without_builder_is_fine(instruments):
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments)      # no builder
+    ds._on_ticks(MagicMock(), [_make_tick(738561)])   # must not raise
