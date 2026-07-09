@@ -1,13 +1,26 @@
 """
-Strategy engine — Momentum / VWAP Breakout.
-Computes indicators (VWAP, EMA 9/21, RSI 14, Volume SMA) and generates BUY/SELL/HOLD signals.
+Strategy engine — framework only.
+
+The strategy implementations have been removed (clean slate for real strategies).
+What remains is the pluggable machinery + a reusable indicator toolkit:
+
+  - TradeSignal: the (direction, entry, stop_loss, target, reason) a strategy returns
+  - STRATEGY_REGISTRY: {name -> fn}; register a strategy to make it selectable
+    everywhere (backtest, paper, live, autotuner) — it needs no other wiring
+  - generate_signal(symbol, df, cfg): dispatches on cfg['name'], applies the MTF gate
+  - indicator toolkit: _compute_indicators, _atr, _sl_target, _ema_col,
+    _supertrend_dir, EMA/crossover helpers, market_regime
+  - multi-timeframe confirmation gate (higher_tf_trend / _apply_mtf_gate)
+
+To add a strategy, write `def my_strategy(symbol, df, cfg) -> TradeSignal:` and add
+it to STRATEGY_REGISTRY. Use `_sl_target(df, entry, direction, cfg)` for SL/target.
 """
 from dataclasses import dataclass
 from typing import Literal, Optional
 
 import pandas as pd
 from ta.momentum import RSIIndicator
-from ta.trend import EMAIndicator, MACD
+from ta.trend import EMAIndicator
 from ta.volume import VolumeWeightedAveragePrice
 
 from src.logger import get_logger
@@ -27,8 +40,10 @@ class TradeSignal:
     reason: str
 
 
+# ── Indicator toolkit (building blocks for real strategies) ───────────────────
+
 def _compute_indicators(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
-    """Append VWAP, EMA fast/slow, RSI, and Volume SMA columns in-place."""
+    """Append VWAP, EMA fast/slow, RSI, and Volume SMA columns (returns a copy)."""
     vwap = VolumeWeightedAveragePrice(
         high=df["high"], low=df["low"], close=df["close"], volume=df["volume"]
     )
@@ -81,7 +96,7 @@ def _atr(df: pd.DataFrame, period: int = 14) -> float:
 
 def _sl_target(df: pd.DataFrame, entry: float, direction: str, cfg: dict) -> tuple[float, float]:
     """
-    Stop-loss and target for an entry. Two modes (SCRUM-81):
+    Stop-loss and target for an entry. Two modes:
     - sl_mode == 'atr': SL = atr_sl_mult × ATR, target = atr_target_mult × ATR
     - otherwise       : fixed stop_loss_pct / target_pct of entry price
     Falls back to fixed if ATR can't be computed.
@@ -103,125 +118,26 @@ def _sl_target(df: pd.DataFrame, entry: float, direction: str, cfg: dict) -> tup
     return round(entry + sl_dist, 2), round(entry - tgt_dist, 2)
 
 
-# ── Strategy #1: Momentum / VWAP breakout ─────────────────────────────────────
-
-def _momentum_vwap_breakout(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
-    """
-    Evaluate BUY/SELL/HOLD on the latest closed candle.
-    df must have columns: open, high, low, close, volume (oldest first).
-    """
-    if len(df) < _min_rows(cfg):
-        logger.warning(f"{symbol}: insufficient data ({len(df)} rows, need {_min_rows(cfg)})")
-        return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "insufficient_data")
-
-    ind = _compute_indicators(df, cfg)
-    last = ind.iloc[-1]
-    lookback = cfg["ema_crossover_lookback"]
-
-    buy = (
-        last["close"] > last["vwap"]
-        and _ema_crossed_above(ind, lookback)
-        and last["rsi"] > cfg["rsi_entry_threshold"]
-        and last["volume"] >= last["vol_sma"] * cfg["volume_multiplier"]
-    )
-    if buy:
-        sl, tgt = _sl_target(df, last["close"], "BUY", cfg)
-        logger.info(f"{symbol}: BUY | close={last['close']} vwap={last['vwap']:.2f} rsi={last['rsi']:.1f}")
-        return TradeSignal("BUY", symbol, last["close"], sl, tgt, "vwap_ema_rsi_volume")
-
-    sell = (
-        last["close"] < last["vwap"]
-        and _ema_crossed_below(ind, lookback)
-        and last["rsi"] < (100 - cfg["rsi_entry_threshold"])
-        and last["volume"] >= last["vol_sma"] * cfg["volume_multiplier"]
-    )
-    if sell:
-        sl, tgt = _sl_target(df, last["close"], "SELL", cfg)
-        logger.info(f"{symbol}: SELL | close={last['close']} vwap={last['vwap']:.2f} rsi={last['rsi']:.1f}")
-        return TradeSignal("SELL", symbol, last["close"], sl, tgt, "vwap_ema_rsi_volume_inverse")
-
-    logger.info(f"{symbol}: HOLD — no signal")
-    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_conditions_met")
+def _hold(symbol: str, reason: str) -> TradeSignal:
+    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, reason)
 
 
-# ── Strategy #3: VWAP mean reversion ──────────────────────────────────────────
-
-def _vwap_mean_reversion(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
-    """
-    Fade moves stretched away from VWAP back toward it (best in range-bound
-    NEUTRAL regime — the counterpart to breakout).
-    BUY when price is stretched far BELOW VWAP and RSI oversold; SELL when far
-    ABOVE and RSI overbought.
-    """
-    if len(df) < _min_rows(cfg):
-        return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "insufficient_data")
-
-    ind = _compute_indicators(df, cfg)
-    last = ind.iloc[-1]
-    stretch = cfg.get("vwap_stretch_pct", 1.5) / 100
-    rsi_ob = cfg.get("rsi_overbought", 70)
-    rsi_os = cfg.get("rsi_oversold", 30)
-    dist = (last["close"] - last["vwap"]) / last["vwap"] if last["vwap"] else 0.0
-
-    if dist <= -stretch and last["rsi"] < rsi_os:
-        sl, tgt = _sl_target(df, last["close"], "BUY", cfg)
-        return TradeSignal("BUY", symbol, last["close"], sl, tgt, "vwap_reversion_long")
-    if dist >= stretch and last["rsi"] > rsi_ob:
-        sl, tgt = _sl_target(df, last["close"], "SELL", cfg)
-        return TradeSignal("SELL", symbol, last["close"], sl, tgt, "vwap_reversion_short")
-
-    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_conditions_met")
+def _ema_col(df: pd.DataFrame, window: int):
+    return EMAIndicator(df["close"], window=window).ema_indicator()
 
 
-# ── Strategy #2: Opening Range Breakout ───────────────────────────────────────
-
-def _orb(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
-    """
-    Break of the opening-range (session start → orb_end) high/low with volume.
-    Requires a 'timestamp' column; HOLDs if the opening range can't be resolved.
-    """
-    if "timestamp" not in df.columns or len(df) < 3:
-        return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_timestamp")
-
-    ts = pd.to_datetime(df["timestamp"])
-    day = ts.iloc[-1].date()
-    open_h, open_m = map(int, cfg.get("orb_start", "09:15").split(":"))
-    end_h, end_m = map(int, cfg.get("orb_end", "09:45").split(":"))
-    same_day = ts.dt.date == day
-    in_or = same_day & (
-        (ts.dt.hour * 60 + ts.dt.minute) >= open_h * 60 + open_m) & (
-        (ts.dt.hour * 60 + ts.dt.minute) < end_h * 60 + end_m)
-    or_rows = df[in_or.values]
-    if or_rows.empty:
-        return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_opening_range")
-
-    or_high = or_rows["high"].max()
-    or_low = or_rows["low"].min()
-    last = df.iloc[-1]
-    # only breakouts that occur after the opening range
-    after_or = df[same_day.values & ~in_or.values]
-    if after_or.empty:
-        return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "within_opening_range")
-
-    vol_ok = True
-    if "volume" in df.columns and len(df) >= cfg.get("volume_sma_period", 20):
-        vol_sma = df["volume"].rolling(cfg["volume_sma_period"]).mean().iloc[-1]
-        vol_ok = last["volume"] >= vol_sma * cfg.get("volume_multiplier", 1.5)
-
-    if last["close"] > or_high and vol_ok:
-        sl, tgt = _sl_target(df, last["close"], "BUY", cfg)
-        return TradeSignal("BUY", symbol, last["close"], sl, tgt, "orb_break_high")
-    if last["close"] < or_low and vol_ok:
-        sl, tgt = _sl_target(df, last["close"], "SELL", cfg)
-        return TradeSignal("SELL", symbol, last["close"], sl, tgt, "orb_break_low")
-
-    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_break")
+def _crossed_above(a, b) -> bool:
+    """Series a crossed above series b on the latest bar."""
+    return bool(a.iloc[-2] <= b.iloc[-2] and a.iloc[-1] > b.iloc[-1])
 
 
-# ── Strategy #8: Supertrend (ATR trend-following) ─────────────────────────────
+def _crossed_below(a, b) -> bool:
+    return bool(a.iloc[-2] >= b.iloc[-2] and a.iloc[-1] < b.iloc[-1])
+
 
 def _supertrend_dir(df: pd.DataFrame, period: int, mult: float) -> Optional[list]:
-    """Return the per-candle supertrend direction (+1 up, -1 down), or None."""
+    """Per-candle Supertrend direction (+1 up, -1 down), or None. Used by the MTF
+    gate's 'supertrend_dir' rule and available to strategies."""
     if len(df) < period + 1:
         return None
     close = df["close"].values
@@ -255,252 +171,32 @@ def _supertrend_dir(df: pd.DataFrame, period: int, mult: float) -> Optional[list
     return direction
 
 
-def _supertrend(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
-    """Enter on a Supertrend flip (volatility-adaptive trend following)."""
-    period = cfg.get("supertrend_period", 10)
-    mult = cfg.get("supertrend_mult", 3.0)
-    direction = _supertrend_dir(df, period, mult)
-    if direction is None or len(direction) < 2:
-        return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "insufficient_data")
-
-    last_close = float(df["close"].iloc[-1])
-    if direction[-1] == 1 and direction[-2] == -1:
-        sl, tgt = _sl_target(df, last_close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, last_close, sl, tgt, "supertrend_flip_up")
-    if direction[-1] == -1 and direction[-2] == 1:
-        sl, tgt = _sl_target(df, last_close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, last_close, sl, tgt, "supertrend_flip_down")
-
-    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, "no_flip")
-
-
-# ── Strategy library — 9 common strategies (ORB already implemented above) ────
-
-def _hold(symbol: str, reason: str) -> TradeSignal:
-    return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, reason)
-
-
-def _ema_col(df: pd.DataFrame, window: int):
-    return EMAIndicator(df["close"], window=window).ema_indicator()
-
-
-def _crossed_above(a, b) -> bool:
-    """Series a crossed above series b on the latest bar."""
-    return bool(a.iloc[-2] <= b.iloc[-2] and a.iloc[-1] > b.iloc[-1])
-
-
-def _crossed_below(a, b) -> bool:
-    return bool(a.iloc[-2] >= b.iloc[-2] and a.iloc[-1] < b.iloc[-1])
-
-
-def _ema_crossover(symbol, df, cfg):
-    """Dual-EMA crossover (default 20/50)."""
-    fast, slow = cfg.get("ec_fast", 20), cfg.get("ec_slow", 50)
-    if len(df) < slow + 2:
-        return _hold(symbol, "insufficient_data")
-    ef, es = _ema_col(df, fast), _ema_col(df, slow)
-    close = float(df["close"].iloc[-1])
-    if _crossed_above(ef, es):
-        sl, tgt = _sl_target(df, close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, close, sl, tgt, "ema_crossover_up")
-    if _crossed_below(ef, es):
-        sl, tgt = _sl_target(df, close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, close, sl, tgt, "ema_crossover_down")
-    return _hold(symbol, "no_cross")
-
-
-def _rsi_reversal(symbol, df, cfg):
-    """RSI overbought/oversold reversal (default RSI-2, 10/90)."""
-    period = cfg.get("rsi_rev_period", 2)
-    ob, os_ = cfg.get("rsi_rev_overbought", 90), cfg.get("rsi_rev_oversold", 10)
-    if len(df) < period + 3:
-        return _hold(symbol, "insufficient_data")
-    r = float(RSIIndicator(df["close"], window=period).rsi().iloc[-1])
-    close = float(df["close"].iloc[-1])
-    if r <= os_:
-        sl, tgt = _sl_target(df, close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, close, sl, tgt, "rsi_oversold_reversal")
-    if r >= ob:
-        sl, tgt = _sl_target(df, close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, close, sl, tgt, "rsi_overbought_reversal")
-    return _hold(symbol, "rsi_neutral")
-
-
-def _ema_pullback(symbol, df, cfg):
-    """Trend-following pullback to the EMA (default EMA-20)."""
-    w = cfg.get("pullback_ema", 20)
-    if len(df) < w + 5:
-        return _hold(symbol, "insufficient_data")
-    ema = _ema_col(df, w)
-    e, e_prev = float(ema.iloc[-1]), float(ema.iloc[-5])
-    close = float(df["close"].iloc[-1])
-    low, high = float(df["low"].iloc[-1]), float(df["high"].iloc[-1])
-    tol = cfg.get("pullback_tol_pct", 0.3) / 100
-    if e > e_prev and close > e and low <= e * (1 + tol):        # uptrend, dipped to EMA
-        sl, tgt = _sl_target(df, close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, close, sl, tgt, "ema_pullback_long")
-    if e < e_prev and close < e and high >= e * (1 - tol):       # downtrend, rallied to EMA
-        sl, tgt = _sl_target(df, close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, close, sl, tgt, "ema_pullback_short")
-    return _hold(symbol, "no_pullback")
-
-
-def _breakout_retest(symbol, df, cfg):
-    """Break of a level then retest of it as new support/resistance."""
-    lb = cfg.get("br_lookback", 20)
-    if len(df) < lb + 3:
-        return _hold(symbol, "insufficient_data")
-    prior = df.iloc[:-1].tail(lb)
-    res, sup = float(prior["high"].max()), float(prior["low"].min())
-    last = df.iloc[-1]
-    close, low, high = float(last["close"]), float(last["low"]), float(last["high"])
-    tol = cfg.get("br_tol_pct", 0.3) / 100
-    if close > res and low <= res * (1 + tol):                  # broke above, retested
-        sl, tgt = _sl_target(df, close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, close, sl, tgt, "breakout_retest_up")
-    if close < sup and high >= sup * (1 - tol):
-        sl, tgt = _sl_target(df, close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, close, sl, tgt, "breakout_retest_down")
-    return _hold(symbol, "no_breakout_retest")
-
-
-def _macd_divergence(symbol, df, cfg):
-    """MACD-histogram vs price divergence (weakening momentum)."""
-    lb = cfg.get("macd_div_lookback", 20)
-    if len(df) < 35:
-        return _hold(symbol, "insufficient_data")
-    hist = MACD(df["close"]).macd_diff()
-    close = df["close"]
-    half = lb // 2
-    p1_lo, p2_lo = float(close.iloc[-lb:-half].min()), float(close.iloc[-half:].min())
-    h1_lo, h2_lo = float(hist.iloc[-lb:-half].min()), float(hist.iloc[-half:].min())
-    p1_hi, p2_hi = float(close.iloc[-lb:-half].max()), float(close.iloc[-half:].max())
-    h1_hi, h2_hi = float(hist.iloc[-lb:-half].max()), float(hist.iloc[-half:].max())
-    turning_up = float(hist.iloc[-1]) > float(hist.iloc[-2])
-    turning_dn = float(hist.iloc[-1]) < float(hist.iloc[-2])
-    c = float(close.iloc[-1])
-    if p2_lo < p1_lo and h2_lo > h1_lo and turning_up:          # bullish divergence
-        sl, tgt = _sl_target(df, c, "BUY", cfg)
-        return TradeSignal("BUY", symbol, c, sl, tgt, "macd_bullish_divergence")
-    if p2_hi > p1_hi and h2_hi < h1_hi and turning_dn:          # bearish divergence
-        sl, tgt = _sl_target(df, c, "SELL", cfg)
-        return TradeSignal("SELL", symbol, c, sl, tgt, "macd_bearish_divergence")
-    return _hold(symbol, "no_divergence")
-
-
-def _support_resistance(symbol, df, cfg):
-    """Bounce off historical support / rejection at resistance."""
-    lb = cfg.get("sr_lookback", 30)
-    if len(df) < lb + 2:
-        return _hold(symbol, "insufficient_data")
-    prior = df.iloc[:-1].tail(lb)
-    support, resistance = float(prior["low"].min()), float(prior["high"].max())
-    last = df.iloc[-1]
-    close, low, high = float(last["close"]), float(last["low"]), float(last["high"])
-    tol = cfg.get("sr_tol_pct", 0.3) / 100
-    if low <= support * (1 + tol) and close > support:          # bounce off support
-        sl, tgt = _sl_target(df, close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, close, sl, tgt, "support_bounce")
-    if high >= resistance * (1 - tol) and close < resistance:   # rejection at resistance
-        sl, tgt = _sl_target(df, close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, close, sl, tgt, "resistance_rejection")
-    return _hold(symbol, "no_level_touch")
-
-
-def _price_action_levels(symbol, df, cfg):
-    """Rejection candles (long wicks) at swing highs/lows."""
-    lb = cfg.get("pa_lookback", 20)
-    if len(df) < lb + 2:
-        return _hold(symbol, "insufficient_data")
-    prior = df.iloc[:-1].tail(lb)
-    swing_low, swing_high = float(prior["low"].min()), float(prior["high"].max())
-    o, c = float(df["open"].iloc[-1]), float(df["close"].iloc[-1])
-    h, l = float(df["high"].iloc[-1]), float(df["low"].iloc[-1])
-    rng = (h - l) or 1e-9
-    lower_wick = (min(o, c) - l) / rng
-    upper_wick = (h - max(o, c)) / rng
-    tol = cfg.get("pa_tol_pct", 0.5) / 100
-    if l <= swing_low * (1 + tol) and c > o and lower_wick > 0.5:   # bullish rejection
-        sl, tgt = _sl_target(df, c, "BUY", cfg)
-        return TradeSignal("BUY", symbol, c, sl, tgt, "bullish_rejection")
-    if h >= swing_high * (1 - tol) and c < o and upper_wick > 0.5:  # bearish rejection
-        sl, tgt = _sl_target(df, c, "SELL", cfg)
-        return TradeSignal("SELL", symbol, c, sl, tgt, "bearish_rejection")
-    return _hold(symbol, "no_rejection")
-
-
-def _swing_mtf(symbol, df, cfg):
-    """Multi-timeframe proxy: long-EMA trend gate + short-EMA cross entry."""
-    lo, sh = cfg.get("mtf_long_ema", 50), cfg.get("mtf_short_ema", 20)
-    if len(df) < lo + 3:
-        return _hold(symbol, "insufficient_data")
-    el, es = _ema_col(df, lo), _ema_col(df, sh)
-    close = float(df["close"].iloc[-1])
-    el_now, el_prev = float(el.iloc[-1]), float(el.iloc[-3])
-    if close > el_now and el_now > el_prev and _crossed_above(es, el):
-        sl, tgt = _sl_target(df, close, "BUY", cfg)
-        return TradeSignal("BUY", symbol, close, sl, tgt, "swing_mtf_long")
-    if close < el_now and el_now < el_prev and _crossed_below(es, el):
-        sl, tgt = _sl_target(df, close, "SELL", cfg)
-        return TradeSignal("SELL", symbol, close, sl, tgt, "swing_mtf_short")
-    return _hold(symbol, "no_mtf_setup")
-
-
-def _smc(symbol, df, cfg):
-    """Smart-money proxy: liquidity sweep of a swing level then reclaim."""
-    lb = cfg.get("smc_lookback", 20)
-    if len(df) < lb + 2:
-        return _hold(symbol, "insufficient_data")
-    prior = df.iloc[:-1].tail(lb)
-    swing_low, swing_high = float(prior["low"].min()), float(prior["high"].max())
-    l, h, c = float(df["low"].iloc[-1]), float(df["high"].iloc[-1]), float(df["close"].iloc[-1])
-    if l < swing_low and c > swing_low:                          # swept lows then reclaimed
-        sl, tgt = _sl_target(df, c, "BUY", cfg)
-        return TradeSignal("BUY", symbol, c, sl, tgt, "smc_liquidity_sweep_long")
-    if h > swing_high and c < swing_high:                        # swept highs then rejected
-        sl, tgt = _sl_target(df, c, "SELL", cfg)
-        return TradeSignal("SELL", symbol, c, sl, tgt, "smc_liquidity_sweep_short")
-    return _hold(symbol, "no_sweep")
-
-
 # ── Registry & dispatcher ─────────────────────────────────────────────────────
 
-STRATEGY_REGISTRY = {
-    "momentum_vwap_breakout": _momentum_vwap_breakout,
-    "vwap_mean_reversion":    _vwap_mean_reversion,
-    "orb":                    _orb,
-    "supertrend":             _supertrend,
-    "ema_crossover":          _ema_crossover,
-    "rsi_reversal":           _rsi_reversal,
-    "ema_pullback":           _ema_pullback,
-    "breakout_retest":        _breakout_retest,
-    "macd_divergence":        _macd_divergence,
-    "support_resistance":     _support_resistance,
-    "price_action_levels":    _price_action_levels,
-    "swing_mtf":              _swing_mtf,
-    "smc":                    _smc,
-}
+# Empty by design — strategies were removed for a clean slate. Register real
+# strategies here: {"my_strategy": my_strategy_fn}. Each fn is
+# (symbol, df, cfg) -> TradeSignal and is then usable in backtest/paper/live and
+# by the auto-tuner (add a grid to auto_tuner.DEFAULT_GRIDS).
+STRATEGY_REGISTRY: dict = {}
 
 
 def generate_signal(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
     """
-    Dispatch to the active strategy named by cfg['name'] (default: momentum),
-    then apply the optional multi-timeframe confirmation gate (B2).
-    Keeps the historical signature so main.py and the backtester call it unchanged.
+    Dispatch to the strategy named by cfg['name'], then apply the optional
+    multi-timeframe confirmation gate. Returns HOLD if no strategy is registered
+    under that name (the clean-slate default — the bot simply takes no trades).
     """
-    name = cfg.get("name", "momentum_vwap_breakout")
-    strategy_fn = STRATEGY_REGISTRY.get(name)
+    strategy_fn = STRATEGY_REGISTRY.get(cfg.get("name"))
     if strategy_fn is None:
-        logger.error(f"Unknown strategy '{name}' — falling back to momentum")
-        strategy_fn = _momentum_vwap_breakout
+        return _hold(symbol, "no_strategy")
     signal = strategy_fn(symbol, df, cfg)
     return _apply_mtf_gate(symbol, df, cfg, signal)
 
 
-# ── Multi-timeframe confirmation gate (B2) ────────────────────────────────────
+# ── Multi-timeframe confirmation gate ─────────────────────────────────────────
 
 def higher_tf_trend(higher_df: pd.DataFrame, cfg: dict) -> Optional[str]:
-    """Trend on the higher timeframe: 'UP' | 'DOWN' | None (not enough data).
+    """Trend on the higher timeframe: 'UP' | 'DOWN' | 'NEUTRAL' | None (not ready).
     Rule 'ema_trend' (default): price vs a rising/falling EMA.
     Rule 'supertrend_dir': supertrend line direction."""
     rule = cfg.get("rule", "ema_trend")
@@ -510,7 +206,6 @@ def higher_tf_trend(higher_df: pd.DataFrame, cfg: dict) -> Optional[str]:
         if direction is None:
             return None
         return "UP" if direction[-1] == 1 else "DOWN"
-    # default: ema_trend
     window = cfg.get("ema", 50)
     if higher_df is None or len(higher_df) < window + 3:
         return None
@@ -539,12 +234,11 @@ def _apply_mtf_gate(symbol: str, df: pd.DataFrame, cfg: dict,
     higher_tf = mtf.get("higher_tf", "1hr")
     from src.timeframe import resample_ohlcv
     if "timestamp" not in df.columns:
-        # can't resample without timestamps — fail-closed (no trade)
-        return _hold(symbol, "mtf_no_timestamp")
+        return _hold(symbol, "mtf_no_timestamp")       # can't resample — fail-closed
     higher = resample_ohlcv(df, higher_tf)
     trend = higher_tf_trend(higher, mtf)
     if trend is None:
-        return _hold(symbol, "mtf_not_ready")          # warm-up: fail-closed
+        return _hold(symbol, "mtf_not_ready")           # warm-up: fail-closed
     agree = (signal.direction == "BUY" and trend == "UP") or \
             (signal.direction == "SELL" and trend == "DOWN")
     if not agree:
@@ -554,16 +248,15 @@ def _apply_mtf_gate(symbol: str, df: pd.DataFrame, cfg: dict,
     return signal
 
 
+# ── Market regime ─────────────────────────────────────────────────────────────
+
 Regime = Literal["BULLISH", "BEARISH", "NEUTRAL"]
 
 
 def market_regime(df: pd.DataFrame, cfg: dict) -> Regime:
     """
-    Classify the index trend so entries align with the broader market (SCRUM-67).
-    BULLISH: index close above EMA by more than the neutral band.
-    BEARISH: below by more than the band.
-    NEUTRAL: inside the band (choppy) — no entries should be taken.
-    df: index candles [.., close, ..]; cfg: strategy section.
+    Classify the index trend so entries can align with the broader market.
+    BULLISH above the EMA + band, BEARISH below, NEUTRAL inside (choppy).
     """
     window = cfg.get("regime_ema", 20)
     band = cfg.get("regime_band_pct", 0.1) / 100

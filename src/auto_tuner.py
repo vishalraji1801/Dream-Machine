@@ -29,32 +29,11 @@ from src.validation import walk_forward_rolling
 
 logger = get_logger("auto_tuner")
 
-# Small, bounded grids per strategy (all values inside the overlay hard bounds).
-DEFAULT_GRIDS: dict[str, dict[str, list]] = {
-    "momentum_vwap_breakout": {"rsi_entry_threshold": [55, 60, 65],
-                               "volume_multiplier": [1.2, 1.5, 2.0]},
-    "vwap_mean_reversion":    {"vwap_stretch_pct": [1.0, 1.5, 2.0],
-                               "rsi_oversold": [25, 30, 35]},
-    "orb":                    {"orb_end": ["09:30", "09:45"],
-                               "volume_multiplier": [1.2, 1.5]},
-    "supertrend":             {"supertrend_period": [7, 10, 14],
-                               "supertrend_mult": [2.0, 3.0, 4.0]},
-    "ema_crossover":          {"ec_fast": [10, 20], "ec_slow": [50, 100]},
-    "rsi_reversal":           {"rsi_rev_period": [2, 5],
-                               "rsi_rev_oversold": [10, 20],
-                               "rsi_rev_overbought": [80, 90]},
-    "ema_pullback":           {"pullback_ema": [20, 50],
-                               "pullback_tol_pct": [0.2, 0.4]},
-    "breakout_retest":        {"br_lookback": [10, 20, 30],
-                               "br_tol_pct": [0.2, 0.3, 0.5]},
-    "macd_divergence":        {"macd_div_lookback": [14, 20, 30]},
-    "support_resistance":     {"sr_lookback": [20, 30, 50],
-                               "sr_tol_pct": [0.2, 0.3]},
-    "price_action_levels":    {"pa_lookback": [10, 20, 30]},
-    "swing_mtf":              {"mtf_long_ema": [50, 100],
-                               "mtf_short_ema": [10, 20]},
-    "smc":                    {"smc_lookback": [10, 20, 30]},
-}
+# Small, bounded per-strategy sweep grids (all values inside the overlay hard
+# bounds). Empty — strategies were removed for a clean slate. Add an entry here
+# when you register a real strategy in src/strategy.py so the auto-tuner can
+# walk-forward tune it; tune_strategy also accepts an explicit grid_spec.
+DEFAULT_GRIDS: dict[str, dict[str, list]] = {}
 
 # Bar an auto-selected winner must clear on stitched OUT-OF-SAMPLE trades.
 DEFAULT_ACCEPT = {"min_oos_trades": 30, "min_oos_pf": 1.2, "min_oos_net": 0.0}

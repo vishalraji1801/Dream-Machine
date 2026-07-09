@@ -61,12 +61,15 @@ trading:
   entry_end_time: "14:30"     # no new entries after (no time for move to play out)
 
 strategy:
-  name: momentum_vwap_breakout
+  # No strategy registered — clean slate. Set `name` to a strategy registered in
+  # src/strategy.py STRATEGY_REGISTRY once a real strategy is added; until then the
+  # engine returns HOLD (no trades). The params below are the shared indicator
+  # toolkit + regime/MTF/SL config that any strategy draws on.
+  name: ""
   ema_fast: 9
   ema_slow: 21
   ema_crossover_lookback: 3
   rsi_period: 14
-  rsi_entry_threshold: 60
   volume_sma_period: 20
   volume_multiplier: 1.5
   entry_order_type: LIMIT
@@ -75,23 +78,11 @@ strategy:
   regime_index_symbol: "NIFTY 50"
   regime_ema: 20                # EMA window on 5-min index candles
   regime_band_pct: 0.1          # neutral band around the EMA (%)
-  # ── Strategy portfolio (V2) ──
-  name: momentum_vwap_breakout  # active strategy (AI overlay may switch within whitelist)
   # SL/target sizing: 'pct' (fixed %) or 'atr' (volatility-adaptive)
   sl_mode: pct
   atr_period: 14
   atr_sl_mult: 1.5              # SL = 1.5 x ATR when sl_mode: atr
   atr_target_mult: 3.0          # target = 3 x ATR when sl_mode: atr
-  # VWAP mean-reversion params
-  vwap_stretch_pct: 1.5
-  rsi_overbought: 70
-  rsi_oversold: 30
-  # Opening Range Breakout params
-  orb_start: "09:15"
-  orb_end: "09:45"
-  # Supertrend params
-  supertrend_period: 10
-  supertrend_mult: 3.0
   # Multi-timeframe confirmation (SCRUM-108 / B2) — off until it beats its
   # own no-MTF baseline in walk-forward. Trading TF signal must agree with the
   # higher-TF trend or the signal is vetoed (fail-closed while warming up).
@@ -100,24 +91,6 @@ strategy:
     higher_tf: "1hr"      # 1hr | 30min
     rule: "ema_trend"     # ema_trend | supertrend_dir
     ema: 50
-  # ── Strategy library params (SCRUM-101) ──
-  ec_fast: 20                 # ema_crossover fast/slow
-  ec_slow: 50
-  rsi_rev_period: 2           # rsi_reversal (RSI-2 by default)
-  rsi_rev_oversold: 10
-  rsi_rev_overbought: 90
-  pullback_ema: 20            # ema_pullback
-  pullback_tol_pct: 0.3
-  br_lookback: 20             # breakout_retest
-  br_tol_pct: 0.3
-  macd_div_lookback: 20       # macd_divergence
-  sr_lookback: 30             # support_resistance
-  sr_tol_pct: 0.3
-  pa_lookback: 20             # price_action_levels
-  pa_tol_pct: 0.5
-  mtf_long_ema: 50            # swing_mtf
-  mtf_short_ema: 20
-  smc_lookback: 20            # smc
 
 risk:
   total_capital: 1000000   # paper campaign: Rs.10L virtual capital
@@ -166,10 +139,7 @@ ai:
   overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist
   telegram_outbox: "logs/telegram_outbox.txt"  # AI writes here; the bot relays to Telegram
   # Hard bounds the overlay can never exceed (the safety sandbox):
-  allowed_strategies: ["momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend",
-                       "ema_crossover", "rsi_reversal", "ema_pullback", "breakout_retest",
-                       "macd_divergence", "support_resistance", "price_action_levels",
-                       "swing_mtf", "smc"]
+  allowed_strategies: []   # populate as real strategies are registered; empty = overlay can't switch strategy
   min_stop_loss_pct: 0.5
   max_stop_loss_pct: 2.0
   min_target_pct: 0.5
