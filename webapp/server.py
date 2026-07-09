@@ -11,7 +11,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from webapp.routers import monitor
+from webapp import ws
+from webapp.routers import control, monitor
 from webapp.settings import get_settings
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -38,6 +39,8 @@ def create_app() -> FastAPI:
                 "token_configured": settings.token is not None}
 
     app.include_router(monitor.router)
+    app.include_router(control.router)
+    app.include_router(ws.router)
 
     # Serve the built PWA if present (production). Absent during backend-only dev.
     if os.path.isdir(_STATIC_DIR):
