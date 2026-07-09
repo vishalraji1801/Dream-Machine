@@ -47,6 +47,9 @@ def main() -> None:
                     help="skip Kite: backtest symbols already in the store (no network/auth)")
     ap.add_argument("--rebuild", action="store_true", help="clear the store and refetch")
     ap.add_argument("--no-analyze", action="store_true", help="skip the Claude analyst step")
+    ap.add_argument("--mtf", action="store_true",
+                    help="enable multi-timeframe confirmation (needs a deep --window, "
+                         "~260, so the higher-TF EMA gate can warm up)")
     args = ap.parse_args()
 
     load_dotenv(dotenv_path=os.path.join("config", ".env"))
@@ -62,6 +65,9 @@ def main() -> None:
     strategies = [s for s in strategies if s in STRATEGY_REGISTRY]
     if not strategies:
         print("ERROR: no valid strategies. Known:", ", ".join(STRATEGY_REGISTRY)); sys.exit(1)
+    if args.mtf:
+        cfg["strategy"].setdefault("mtf_confirm", {})["enabled"] = True
+        print("Multi-timeframe confirmation: ENABLED for this run")
     num_stocks = args.num_stocks or cfg["backtest_data"].get("num_stocks", 30)
     req_symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     index_symbol = cfg["strategy"].get("regime_index_symbol", "NIFTY 50")

@@ -366,6 +366,11 @@ def _scan_entries(ctx: dict) -> None:
             continue
         signal = generate_signal(symbol, df, cfg["strategy"])
         if signal.direction == "HOLD":
+            # persist MTF vetoes so their counterfactual value can be measured (B2)
+            if signal.reason.startswith("mtf_veto") and signal.entry_price:
+                vetoed_dir = signal.reason.split(":")[1]
+                _db_signal(ctx, symbol, vetoed_dir, taken=False, reason=signal.reason)
+                logger.info(f"{symbol}: MTF veto recorded ({signal.reason})")
             continue
         if regime and ((signal.direction == "BUY" and regime != "BULLISH")
                        or (signal.direction == "SELL" and regime != "BEARISH")):

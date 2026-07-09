@@ -484,7 +484,8 @@ STRATEGY_REGISTRY = {
 
 def generate_signal(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
     """
-    Dispatch to the active strategy named by cfg['name'] (default: momentum).
+    Dispatch to the active strategy named by cfg['name'] (default: momentum),
+    then apply the optional multi-timeframe confirmation gate (B2).
     Keeps the historical signature so main.py and the backtester call it unchanged.
     """
     name = cfg.get("name", "momentum_vwap_breakout")
@@ -492,7 +493,65 @@ def generate_signal(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
     if strategy_fn is None:
         logger.error(f"Unknown strategy '{name}' — falling back to momentum")
         strategy_fn = _momentum_vwap_breakout
-    return strategy_fn(symbol, df, cfg)
+    signal = strategy_fn(symbol, df, cfg)
+    return _apply_mtf_gate(symbol, df, cfg, signal)
+
+
+# ── Multi-timeframe confirmation gate (B2) ────────────────────────────────────
+
+def higher_tf_trend(higher_df: pd.DataFrame, cfg: dict) -> Optional[str]:
+    """Trend on the higher timeframe: 'UP' | 'DOWN' | None (not enough data).
+    Rule 'ema_trend' (default): price vs a rising/falling EMA.
+    Rule 'supertrend_dir': supertrend line direction."""
+    rule = cfg.get("rule", "ema_trend")
+    if rule == "supertrend_dir":
+        direction = _supertrend_dir(higher_df, cfg.get("supertrend_period", 10),
+                                    cfg.get("supertrend_mult", 3.0))
+        if direction is None:
+            return None
+        return "UP" if direction[-1] == 1 else "DOWN"
+    # default: ema_trend
+    window = cfg.get("ema", 50)
+    if higher_df is None or len(higher_df) < window + 3:
+        return None
+    ema = _ema_col(higher_df, window)
+    close = float(higher_df["close"].iloc[-1])
+    e_now, e_prev = float(ema.iloc[-1]), float(ema.iloc[-3])
+    if close > e_now and e_now >= e_prev:
+        return "UP"
+    if close < e_now and e_now <= e_prev:
+        return "DOWN"
+    return "NEUTRAL"
+
+
+def _apply_mtf_gate(symbol: str, df: pd.DataFrame, cfg: dict,
+                    signal: TradeSignal) -> TradeSignal:
+    # Nested config block, overridable by flat keys (so the bounded AI overlay
+    # and the auto-tuner can toggle/tune MTF through simple whitelisted fields).
+    mtf = dict(cfg.get("mtf_confirm", {}))
+    for flat, key in (("mtf_enabled", "enabled"), ("mtf_higher_tf", "higher_tf"),
+                      ("mtf_rule", "rule")):
+        if flat in cfg:
+            mtf[key] = cfg[flat]
+    if not mtf.get("enabled") or signal.direction == "HOLD":
+        return signal
+
+    higher_tf = mtf.get("higher_tf", "1hr")
+    from src.timeframe import resample_ohlcv
+    if "timestamp" not in df.columns:
+        # can't resample without timestamps — fail-closed (no trade)
+        return _hold(symbol, "mtf_no_timestamp")
+    higher = resample_ohlcv(df, higher_tf)
+    trend = higher_tf_trend(higher, mtf)
+    if trend is None:
+        return _hold(symbol, "mtf_not_ready")          # warm-up: fail-closed
+    agree = (signal.direction == "BUY" and trend == "UP") or \
+            (signal.direction == "SELL" and trend == "DOWN")
+    if not agree:
+        logger.info(f"{symbol}: {signal.direction} vetoed by {higher_tf} trend {trend}")
+        return TradeSignal("HOLD", symbol, signal.entry_price, signal.stop_loss,
+                           signal.target, f"mtf_veto:{signal.direction}:{trend}")
+    return signal
 
 
 Regime = Literal["BULLISH", "BEARISH", "NEUTRAL"]

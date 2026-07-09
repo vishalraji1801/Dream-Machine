@@ -50,11 +50,14 @@ _STRATEGY_BOUNDS = {
     "smc_lookback": (5, 40),
 }
 _ORB_END_ALLOWED = {"09:30", "09:45", "10:00"}
+_MTF_TF_ALLOWED = {"30min", "1hr"}
+_MTF_RULE_ALLOWED = {"ema_trend", "supertrend_dir"}
 
 # Only these top-level keys may be adjusted by an overlay. Capital, position caps,
 # circuit breakers, product type, watchlist etc. are deliberately NOT adjustable.
 _ADJUSTABLE = {
     "strategy": {"name", "regime_filter_enabled", "orb_end", "sl_mode",
+                 "mtf_enabled", "mtf_higher_tf", "mtf_rule",
                  *_STRATEGY_BOUNDS},
     "risk": {"stop_loss_pct", "target_pct", "trailing_sl_enabled",
              "max_trades_per_day"},
@@ -124,6 +127,12 @@ def _validate(overlay: dict, cfg: dict) -> Optional[str]:
         return f"strategy.orb_end '{strat['orb_end']}' not in {sorted(_ORB_END_ALLOWED)}"
     if "sl_mode" in strat and strat["sl_mode"] not in ("pct", "atr"):
         return "strategy.sl_mode must be 'pct' or 'atr'"
+    if "mtf_enabled" in strat and not isinstance(strat["mtf_enabled"], bool):
+        return "strategy.mtf_enabled must be true/false"
+    if "mtf_higher_tf" in strat and strat["mtf_higher_tf"] not in _MTF_TF_ALLOWED:
+        return f"strategy.mtf_higher_tf not in {sorted(_MTF_TF_ALLOWED)}"
+    if "mtf_rule" in strat and strat["mtf_rule"] not in _MTF_RULE_ALLOWED:
+        return f"strategy.mtf_rule not in {sorted(_MTF_RULE_ALLOWED)}"
     for key, (lo, hi) in _STRATEGY_BOUNDS.items():
         if key in strat:
             value = strat[key]
