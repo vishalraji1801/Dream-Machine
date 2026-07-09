@@ -36,16 +36,19 @@ def score_quote(q: dict, cfg: dict) -> Optional[dict]:
     extreme_proximity = max(range_pos, 1 - range_pos)
 
     w = cfg.get("scanner", {})
+    rv = q.get("rvol")   # supplied by the caller from a volume profile (A1)
     score = (
         abs(pct_change) * w.get("w_pct_change", 1.0)
         + extreme_proximity * w.get("w_range_pos", 2.0)
         + abs(gap) * w.get("w_gap", 0.5)
+        + (rv * cfg.get("universe", {}).get("rvol", {}).get("score_weight", 0.4)
+           if rv is not None else 0.0)
     )
     return {
         "symbol": q.get("symbol"),
         "score": round(score, 4),
         "pct_change": round(pct_change, 3),
-        "rvol": None,  # requires avg-volume from the universe builder (future)
+        "rvol": round(rv, 4) if rv is not None else None,
     }
 
 
@@ -76,9 +79,17 @@ def shadow_scan(quotes: dict[str, dict], cfg: dict) -> tuple[list[dict], list[di
     usable quote, each tagged with a reason — so filter thresholds and the
     scanner's picks can be replayed and re-tuned later.
     """
-    ranked = rank(quotes, cfg, limit=None)
-    scored_syms = {r["symbol"] for r in ranked}
-    rejected = [{"symbol": q.get("symbol", sym), "reason": "no_quote_data"}
-                for sym, q in quotes.items()
-                if q.get("symbol", sym) not in scored_syms]
+    require_rvol = cfg.get("universe", {}).get("require_rvol", False)
+    ranked, rejected = [], []
+    for symbol, q in quotes.items():
+        sym = q.get("symbol", symbol)
+        if require_rvol and q.get("rvol") is None:
+            rejected.append({"symbol": sym, "reason": "rvol_unavailable"})
+            continue
+        s = score_quote({**q, "symbol": sym}, cfg)
+        (ranked if s else rejected).append(
+            s if s else {"symbol": sym, "reason": "no_quote_data"})
+    ranked.sort(key=lambda x: x["score"], reverse=True)
+    for i, r in enumerate(ranked, 1):
+        r["rank"] = i
     return ranked, rejected

@@ -68,3 +68,22 @@ def test_shadow_scan_splits_ranked_and_rejected():
     ranked, rejected = shadow_scan(quotes, CFG)
     assert {r["symbol"] for r in ranked} == {"A", "B"}
     assert rejected == [{"symbol": "DEAD", "reason": "no_quote_data"}]
+
+
+# ── A1: RVOL in scoring & shadow ──────────────────────────────────────────────
+
+def test_rvol_boosts_score_and_is_persisted():
+    base = _q("A", 105, 100, 106, 99)
+    plain = score_quote({**base}, CFG)
+    with_rvol = score_quote({**base, "rvol": 3.0}, {**CFG, "universe": {"rvol": {"score_weight": 1.0}}})
+    assert with_rvol["score"] > plain["score"]
+    assert with_rvol["rvol"] == 3.0
+
+
+def test_shadow_scan_excludes_when_require_rvol():
+    quotes = {"A": {**_q("A", 105, 100, 106, 99), "rvol": 2.0},
+              "B": {**_q("B", 108, 100, 109, 99)}}    # no rvol
+    cfg = {**CFG, "universe": {"require_rvol": True, "rvol": {"score_weight": 0.4}}}
+    ranked, rejected = shadow_scan(quotes, cfg)
+    assert [r["symbol"] for r in ranked] == ["A"]
+    assert rejected == [{"symbol": "B", "reason": "rvol_unavailable"}]

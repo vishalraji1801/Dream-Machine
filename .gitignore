@@ -27,3 +27,6 @@ data_cache/
 
 # AI runtime-written files (Claude overwrites these; do not track)
 config/ai_overlay.yaml
+
+# A1 volume profiles (runtime data)
+data_cache/profiles/

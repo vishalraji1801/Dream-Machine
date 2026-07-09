@@ -101,12 +101,17 @@ def _make_ctx(
     events.is_market_event_day.return_value = False
     events.symbol_has_event.return_value = False
 
+    from src.volume_profile import RvolConfig
+    profiles = MagicMock()
+    profiles.load.return_value = None
+
     return {
         "cfg": cfg, "kite": kite, "alert": alert,
         "fetcher": fetcher, "streamer": streamer, "executor": executor,
         "risk": risk, "positions": positions, "ledger": ledger,
         "state": state, "calendar": calendar, "db": db, "source": "paper",
-        "events": events,
+        "events": events, "candles": None, "profiles": profiles,
+        "rvol_cfg": RvolConfig(),
         "_mock_signal": mock_signal,
     }
 
