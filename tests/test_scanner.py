@@ -45,3 +45,26 @@ def test_rank_uses_dict_key_as_symbol():
 def test_rank_skips_unpriced():
     ranked = rank({"A": {"ltp": None, "close": 100}, "B": _q("B", 105, 100, 106, 99)}, CFG)
     assert [r["symbol"] for r in ranked] == ["B"]
+
+
+# ── A0: full rankings + shadow scan ───────────────────────────────────────────
+
+from src.scanner import shadow_scan
+
+
+def test_rank_limit_none_returns_all():
+    quotes = {c: _q(c, 100 + i, 100, 101 + i, 99) for i, c in enumerate("ABCDE")}
+    full = rank(quotes, {"scanner": {"top_n": 2}}, limit=None)
+    assert len(full) == 5                      # all, not top_n
+    assert [r["rank"] for r in full] == [1, 2, 3, 4, 5]
+
+
+def test_shadow_scan_splits_ranked_and_rejected():
+    quotes = {
+        "A": _q("A", 105, 100, 106, 99),
+        "B": _q("B", 108, 100, 109, 99),
+        "DEAD": {"ltp": None, "close": None},   # unscorable
+    }
+    ranked, rejected = shadow_scan(quotes, CFG)
+    assert {r["symbol"] for r in ranked} == {"A", "B"}
+    assert rejected == [{"symbol": "DEAD", "reason": "no_quote_data"}]

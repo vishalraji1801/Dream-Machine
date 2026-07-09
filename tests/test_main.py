@@ -903,6 +903,28 @@ def test_run_idles_on_holiday():
     ctx["risk"].is_market_open.assert_not_called()  # calendar short-circuits
 
 
+# ── A0: shadow scan persistence ───────────────────────────────────────────────
+
+def test_shadow_scan_persists_full_rankings():
+    ctx = _make_ctx(quotes={
+        "RELIANCE": {"ltp": 2850.0, "close": 2800.0, "high": 2860.0, "low": 2790.0, "open": 2800.0},
+        "TCS": {"ltp": 3500.0, "close": 3480.0, "high": 3510.0, "low": 3470.0, "open": 3480.0}})
+    ctx["cfg"]["trading"]["watchlist"] = ["RELIANCE", "TCS"]
+    ctx["cfg"]["scanner"] = {"top_n": 1, "shadow_enabled": True,
+                             "w_pct_change": 1.0, "w_range_pos": 2.0, "w_gap": 0.5}
+    main._shadow_scan(ctx)
+    ctx["db"].record_scan.assert_called_once()
+    ranked = ctx["db"].record_scan.call_args.args[0]
+    assert len(ranked) == 2                    # ALL symbols persisted, not top_n
+
+
+def test_shadow_scan_disabled_noop():
+    ctx = _make_ctx(quotes={"RELIANCE": {"ltp": 2850.0}})
+    ctx["cfg"]["scanner"] = {"shadow_enabled": False}
+    main._shadow_scan(ctx)
+    ctx["db"].record_scan.assert_not_called()
+
+
 # ── SCRUM-106: tick-built candle provider ─────────────────────────────────────
 
 def test_get_candles_uses_builder_when_warm():

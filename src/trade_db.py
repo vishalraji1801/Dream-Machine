@@ -50,7 +50,8 @@ CREATE TABLE IF NOT EXISTS scanner_rankings (
     rank         INTEGER,
     score        REAL,
     rvol         REAL,
-    pct_change   REAL
+    pct_change   REAL,
+    reason       TEXT
 );
 CREATE TABLE IF NOT EXISTS cycle_snapshots (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,6 +71,15 @@ class TradeDB:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with self._connect() as con:
             con.executescript(_SCHEMA)
+            self._migrate(con)
+
+    @staticmethod
+    def _migrate(con) -> None:
+        """Additive migrations for DBs created before a column existed."""
+        cols = {r[1] for r in con.execute("PRAGMA table_info(scanner_rankings)")}
+        if "reason" not in cols:
+            con.execute("ALTER TABLE scanner_rankings ADD COLUMN reason TEXT")
+        con.commit()
 
     def _connect(self) -> sqlite3.Connection:
         con = sqlite3.connect(self._path, timeout=10)
@@ -103,13 +113,17 @@ class TradeDB:
             (source, self._as_iso(ts or datetime.now()), symbol, direction,
              strategy, 1 if taken else 0, reason))
 
-    def record_scan(self, rankings: list[dict], ts=None) -> None:
+    def record_scan(self, rankings: list[dict], ts=None,
+                    rejected: Optional[list[dict]] = None) -> None:
         stamp = self._as_iso(ts or datetime.now())
         rows = [(stamp, r.get("symbol"), r.get("rank"), r.get("score"),
-                 r.get("rvol"), r.get("pct_change")) for r in rankings]
+                 r.get("rvol"), r.get("pct_change"), r.get("reason")) for r in rankings]
+        for rj in (rejected or []):
+            rows.append((stamp, rj.get("symbol"), None, None, None, None,
+                         rj.get("reason", "rejected")))
         self._exec_many(
-            "INSERT INTO scanner_rankings (ts, symbol, rank, score, rvol, pct_change) "
-            "VALUES (?,?,?,?,?,?)", rows)
+            "INSERT INTO scanner_rankings (ts, symbol, rank, score, rvol, pct_change, reason) "
+            "VALUES (?,?,?,?,?,?,?)", rows)
 
     def record_snapshot(self, *, open_positions: int, daily_pnl: float,
                         trades_today: int, regime: Optional[str] = None, ts=None) -> None:

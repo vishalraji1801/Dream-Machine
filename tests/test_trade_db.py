@@ -92,3 +92,14 @@ def test_accepts_string_times(db):
         pnl=2.0, exit_reason="target_hit",
     )
     assert db.trades()[0]["entry_time"] == "2026-07-04 10:00:00"
+
+
+def test_record_scan_persists_reason_and_rejected(db):
+    db.record_scan(
+        [{"symbol": "A", "rank": 1, "score": 9.0, "rvol": None, "pct_change": 2.0}],
+        rejected=[{"symbol": "DEAD", "reason": "no_quote_data"}])
+    with db._connect() as con:
+        rows = {r["symbol"]: dict(r) for r in con.execute("SELECT * FROM scanner_rankings")}
+    assert rows["A"]["rank"] == 1
+    assert rows["DEAD"]["reason"] == "no_quote_data"
+    assert rows["DEAD"]["rank"] is None
