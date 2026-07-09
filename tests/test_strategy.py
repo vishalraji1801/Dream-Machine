@@ -1,7 +1,8 @@
 import pandas as pd
 import pytest
 
-from src.strategy import TradeSignal, generate_signal
+from src.strategy import (STRATEGY_REGISTRY, TradeSignal, _atr, _sl_target,
+                          _supertrend_dir, generate_signal, market_regime)
 
 
 @pytest.fixture
@@ -11,7 +12,6 @@ def cfg():
         "ema_slow": 21,
         "ema_crossover_lookback": 3,
         "rsi_period": 14,
-        "rsi_entry_threshold": 60,
         "volume_sma_period": 20,
         "volume_multiplier": 1.5,
         "stop_loss_pct": 1.0,
@@ -36,101 +36,45 @@ def _make_df(n: int = 80, trend: str = "up", vol_spike: bool = False) -> pd.Data
     })
 
 
-def test_hold_on_insufficient_data(cfg):
-    signal = generate_signal("RELIANCE", _make_df(n=10), cfg)
-    assert signal.direction == "HOLD"
-    assert signal.reason == "insufficient_data"
+# ── dispatcher: clean-slate registry ─────────────────────────────────────────
+
+def test_no_strategy_registered_holds(cfg):
+    """With an empty registry the engine takes no trades."""
+    sig = generate_signal("RELIANCE", _make_df(n=80), cfg)
+    assert isinstance(sig, TradeSignal)
+    assert sig.direction == "HOLD"
+    assert sig.reason == "no_strategy"
+    assert sig.entry_price == 0.0 and sig.stop_loss == 0.0 and sig.target == 0.0
 
 
-def test_returns_trade_signal_instance(cfg):
-    signal = generate_signal("RELIANCE", _make_df(n=80), cfg)
-    assert isinstance(signal, TradeSignal)
-    assert signal.symbol == "RELIANCE"
-    assert signal.direction in ("BUY", "SELL", "HOLD")
+def test_unknown_name_holds(cfg):
+    sig = generate_signal("X", _make_df(n=80), {**cfg, "name": "nonexistent"})
+    assert sig.direction == "HOLD"
+    assert sig.reason == "no_strategy"
 
 
-def test_buy_sl_below_entry(cfg):
-    for _ in range(3):
-        signal = generate_signal("TEST", _make_df(n=80, trend="up", vol_spike=True), cfg)
-        if signal.direction == "BUY":
-            assert signal.stop_loss < signal.entry_price
-            assert signal.target > signal.entry_price
-            assert signal.target > signal.stop_loss
-            return
-    pytest.skip("No BUY signal generated in this synthetic data")
+def test_dispatcher_routes_to_registered_strategy(cfg):
+    """A strategy added to the registry is dispatched by name."""
+    def always_buy(symbol, df, c):
+        entry = float(df["close"].iloc[-1])
+        sl, tgt = _sl_target(df, entry, "BUY", c)
+        return TradeSignal("BUY", symbol, entry, sl, tgt, "always_buy")
+
+    STRATEGY_REGISTRY["always_buy"] = always_buy
+    try:
+        sig = generate_signal("X", _make_df(n=80), {**cfg, "name": "always_buy"})
+    finally:
+        del STRATEGY_REGISTRY["always_buy"]
+    assert sig.direction == "BUY"
+    assert sig.reason == "always_buy"
+    assert sig.stop_loss < sig.entry_price < sig.target
 
 
-def test_sell_sl_above_entry(cfg):
-    for _ in range(3):
-        signal = generate_signal("TEST", _make_df(n=80, trend="down", vol_spike=True), cfg)
-        if signal.direction == "SELL":
-            assert signal.stop_loss > signal.entry_price
-            assert signal.target < signal.entry_price
-            return
-    pytest.skip("No SELL signal generated in this synthetic data")
+def test_registry_empty_by_default():
+    assert STRATEGY_REGISTRY == {}
 
 
-def test_hold_returns_zero_prices(cfg):
-    signal = generate_signal("RELIANCE", _make_df(n=80), cfg)
-    if signal.direction == "HOLD":
-        assert signal.entry_price == 0.0
-        assert signal.stop_loss == 0.0
-        assert signal.target == 0.0
-
-
-def test_signal_sl_target_ratio(cfg):
-    signal = generate_signal("TEST", _make_df(n=80, trend="up"), cfg)
-    if signal.direction == "BUY":
-        reward = signal.target - signal.entry_price
-        risk = signal.entry_price - signal.stop_loss
-        assert reward / risk >= cfg["stop_loss_pct"] / cfg["stop_loss_pct"]
-
-
-# ── market_regime (SCRUM-67) ─────────────────────────────────────────────────
-
-from src.strategy import market_regime
-
-
-def _index_df(closes):
-    return pd.DataFrame({
-        "open": closes, "high": [c + 5 for c in closes],
-        "low": [c - 5 for c in closes], "close": closes,
-        "volume": [1000] * len(closes),
-    })
-
-
-_REGIME_CFG = {"regime_ema": 20, "regime_band_pct": 0.1}
-
-
-def test_regime_bullish_when_price_above_ema():
-    closes = [22000 + i * 20 for i in range(40)]  # steady uptrend
-    assert market_regime(_index_df(closes), _REGIME_CFG) == "BULLISH"
-
-
-def test_regime_bearish_when_price_below_ema():
-    closes = [23000 - i * 20 for i in range(40)]  # steady downtrend
-    assert market_regime(_index_df(closes), _REGIME_CFG) == "BEARISH"
-
-
-def test_regime_neutral_when_flat():
-    closes = [22000.0] * 40  # dead flat — close == ema
-    assert market_regime(_index_df(closes), _REGIME_CFG) == "NEUTRAL"
-
-
-def test_regime_neutral_when_insufficient_data():
-    closes = [22000 + i * 20 for i in range(10)]  # fewer than ema+5 rows
-    assert market_regime(_index_df(closes), _REGIME_CFG) == "NEUTRAL"
-
-
-def test_regime_neutral_when_df_none():
-    assert market_regime(None, _REGIME_CFG) == "NEUTRAL"
-
-
-# ── V2 P4: ATR helpers, dispatcher, and portfolio strategies ──────────────────
-
-from src.strategy import (STRATEGY_REGISTRY, _atr, _sl_target, _supertrend_dir,
-                          generate_signal as gen)
-
+# ── indicator toolkit ────────────────────────────────────────────────────────
 
 def _ohlc(closes, vols=None, highs=None, lows=None, timestamps=None):
     n = len(closes)
@@ -183,113 +127,49 @@ def test_sl_target_atr_falls_back_when_no_atr():
     assert sl == 99.0 and tgt == 102.0
 
 
-# dispatcher
-
-def test_dispatcher_defaults_to_momentum(cfg):
-    df = _make_df(n=80, trend="up", vol_spike=True)
-    # no 'name' key -> momentum path (may be BUY or HOLD, but must not raise)
-    sig = gen("X", df, cfg)
-    assert sig.direction in ("BUY", "SELL", "HOLD")
-
-
-def test_dispatcher_unknown_name_falls_back(cfg):
-    cfg = {**cfg, "name": "nonexistent_strategy"}
-    sig = gen("X", _make_df(n=80), cfg)
-    assert sig.direction in ("BUY", "SELL", "HOLD")
-
-
-def test_dispatcher_routes_to_named_strategy(cfg):
-    calls = {}
-    orig = STRATEGY_REGISTRY["vwap_mean_reversion"]
-    def spy(symbol, df, c):
-        calls["hit"] = True
-        return orig(symbol, df, c)
-    STRATEGY_REGISTRY["vwap_mean_reversion"] = spy
-    try:
-        gen("X", _make_df(n=80, trend="down"), {**cfg, "name": "vwap_mean_reversion"})
-    finally:
-        STRATEGY_REGISTRY["vwap_mean_reversion"] = orig
-    assert calls.get("hit")
-
-
-def test_registry_has_all_strategies():
-    assert {"momentum_vwap_breakout", "vwap_mean_reversion", "orb", "supertrend",
-            "ema_crossover", "rsi_reversal", "ema_pullback", "breakout_retest",
-            "macd_divergence", "support_resistance", "price_action_levels",
-            "swing_mtf", "smc"} == set(STRATEGY_REGISTRY)
-
-
-# vwap mean reversion
-
-def test_vwap_mean_reversion_buys_oversold_below_vwap(cfg):
-    c = {**cfg, "name": "vwap_mean_reversion", "vwap_stretch_pct": 0.5,
-         "rsi_oversold": 35, "rsi_overbought": 65}
-    df = _make_df(n=80, trend="down")  # steady decline => close below vwap, low RSI
-    sig = gen("X", df, c)
-    assert sig.direction == "BUY"
-    assert sig.reason == "vwap_reversion_long"
-
-
-def test_vwap_mean_reversion_sells_overbought_above_vwap(cfg):
-    c = {**cfg, "name": "vwap_mean_reversion", "vwap_stretch_pct": 0.5,
-         "rsi_oversold": 35, "rsi_overbought": 65}
-    df = _make_df(n=80, trend="up")
-    sig = gen("X", df, c)
-    assert sig.direction == "SELL"
-    assert sig.reason == "vwap_reversion_short"
-
-
-# supertrend
-
 def test_supertrend_dir_none_when_short():
     assert _supertrend_dir(_ohlc([1, 2, 3]), 10, 3.0) is None
 
 
-def test_supertrend_flip_up_gives_buy(cfg):
-    # long downtrend then a sharp jump on the final candle -> flip to +1
-    closes = [1000 - i * 6 for i in range(28)] + [1000 - 27 * 6 + 120]
-    highs = [c + 2 for c in closes]
-    highs[-1] = closes[-1] + 2
-    lows = [c - 2 for c in closes]
-    df = _ohlc(closes, highs=highs, lows=lows)
-    sig = gen("X", df, {**cfg, "name": "supertrend", "supertrend_period": 10, "supertrend_mult": 3.0})
-    assert sig.direction == "BUY"
-    assert sig.reason == "supertrend_flip_up"
+def test_supertrend_dir_tracks_uptrend():
+    df = _ohlc([1000 + i * 3 for i in range(40)])   # steady uptrend
+    direction = _supertrend_dir(df, 10, 3.0)
+    assert direction is not None
+    assert direction[-1] == 1
 
 
-def test_supertrend_no_flip_holds(cfg):
-    df = _ohlc([1000 + i * 3 for i in range(40)])  # steady uptrend, no flip at end
-    sig = gen("X", df, {**cfg, "name": "supertrend"})
-    assert sig.direction == "HOLD"
+# ── market_regime (SCRUM-67) ─────────────────────────────────────────────────
+
+def _index_df(closes):
+    return pd.DataFrame({
+        "open": closes, "high": [c + 5 for c in closes],
+        "low": [c - 5 for c in closes], "close": closes,
+        "volume": [1000] * len(closes),
+    })
 
 
-# ORB
-
-def test_orb_breaks_opening_range_high(cfg):
-    day = "2026-07-06 "
-    times, closes, highs, lows, vols = [], [], [], [], []
-    # opening range 09:15-09:40 (6 candles) with high ~105
-    for i in range(6):
-        h, m = 9, 15 + i * 5
-        times.append(f"{day}{h:02d}:{m:02d}")
-        closes.append(103.0); highs.append(105.0); lows.append(101.0); vols.append(400_000)
-    # later candles, last one breaks above 105 with volume
-    later = ["09:45", "09:50", "09:55", "10:00", "10:05", "10:10", "10:15", "10:20"]
-    for i, hm in enumerate(later):
-        times.append(f"{day}{hm}")
-        brk = i == len(later) - 1
-        closes.append(108.0 if brk else 104.0)
-        highs.append(109.0 if brk else 104.5)
-        lows.append(103.0)
-        vols.append(1_500_000 if brk else 300_000)
-    df = _ohlc(closes, vols=vols, highs=highs, lows=lows, timestamps=times)
-    c = {**cfg, "name": "orb", "orb_start": "09:15", "orb_end": "09:45",
-         "volume_sma_period": 5, "volume_multiplier": 1.5}
-    sig = gen("X", df, c)
-    assert sig.direction == "BUY"
-    assert sig.reason == "orb_break_high"
+_REGIME_CFG = {"regime_ema": 20, "regime_band_pct": 0.1}
 
 
-def test_orb_holds_without_timestamp(cfg):
-    sig = gen("X", _make_df(n=40), {**cfg, "name": "orb"})
-    assert sig.direction == "HOLD"
+def test_regime_bullish_when_price_above_ema():
+    closes = [22000 + i * 20 for i in range(40)]  # steady uptrend
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "BULLISH"
+
+
+def test_regime_bearish_when_price_below_ema():
+    closes = [23000 - i * 20 for i in range(40)]  # steady downtrend
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "BEARISH"
+
+
+def test_regime_neutral_when_flat():
+    closes = [22000.0] * 40  # dead flat — close == ema
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "NEUTRAL"
+
+
+def test_regime_neutral_when_insufficient_data():
+    closes = [22000 + i * 20 for i in range(10)]  # fewer than ema+5 rows
+    assert market_regime(_index_df(closes), _REGIME_CFG) == "NEUTRAL"
+
+
+def test_regime_neutral_when_df_none():
+    assert market_regime(None, _REGIME_CFG) == "NEUTRAL"
