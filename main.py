@@ -26,6 +26,7 @@ from src.paper_trader import PaperTrader
 from src.position_manager import PositionManager
 from src.risk_manager import RiskManager
 from src.scanner import rank as scanner_rank
+from src.scanner import shadow_scan
 from src.state_store import StateStore
 from src.strategy import generate_signal, market_regime
 from src.tick_candle_builder import TickCandleBuilder
@@ -164,8 +165,29 @@ def startup() -> dict:
             f"P&L Rs.{saved['daily_pnl']:.2f}, {saved['trades_today']} trades today."
         )
 
+    _write_daily_universe(ctx)
     logger.info("All modules initialised — bot ready")
     return ctx
+
+
+def _write_daily_universe(ctx: dict) -> None:
+    """A0: snapshot today's traded membership (symbol -> token) so backtests can
+    later replay the point-in-time list instead of today's survivors."""
+    try:
+        import csv
+        os.makedirs("data_cache", exist_ok=True)
+        path = os.path.join("data_cache", f"universe_{datetime.now():%Y-%m-%d}.csv")
+        instruments = ctx["fetcher"]._instruments
+        watchlist = ctx["cfg"]["trading"]["watchlist"]
+        with open(path, "w", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(["symbol", "token"])
+            for sym in watchlist:
+                if sym in instruments:
+                    w.writerow([sym, instruments[sym]])
+        logger.info(f"Daily universe snapshot written: {path}")
+    except Exception as exc:
+        logger.warning(f"Could not write daily universe file: {exc}")
 
 
 # ── Trading cycle ─────────────────────────────────────────────────────────────
@@ -184,6 +206,8 @@ def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
         _scan_entries(ctx)
     else:
         logger.info("Paused — entry scan skipped")
+
+    _shadow_scan(ctx)
 
     db = ctx.get("db")
     if db is not None:
@@ -416,6 +440,28 @@ def _spread_ok(symbol: str, quote: dict, cfg: dict) -> bool:
         logger.info(f"{symbol}: spread {spread_pct:.3f}% > {max_spread}% — entry skipped")
         return False
     return True
+
+
+def _shadow_scan(ctx: dict) -> None:
+    """A0: persist a full point-in-time scanner snapshot every cycle (rankings for
+    ALL symbols + rejected-with-reason), so point-in-time universe history accrues
+    now — even while we still trade the fixed watchlist. Trading is unaffected.
+    Uses streamed quotes (no extra REST) and never raises into the cycle."""
+    if not ctx["cfg"].get("scanner", {}).get("shadow_enabled", True):
+        return
+    db = ctx.get("db")
+    if db is None:
+        return
+    try:
+        watchlist = ctx["cfg"]["trading"]["watchlist"]
+        quotes = _get_quotes(ctx, watchlist)
+        if not quotes:
+            return
+        ranked, rejected = shadow_scan({s: {**quotes[s], "symbol": s} for s in quotes},
+                                       ctx["cfg"])
+        db.record_scan(ranked, rejected=rejected)
+    except Exception as exc:
+        logger.warning(f"Shadow scan failed (non-fatal): {exc}")
 
 
 def _get_candles(ctx: dict, symbol: str):

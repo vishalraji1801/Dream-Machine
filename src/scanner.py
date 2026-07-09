@@ -49,12 +49,14 @@ def score_quote(q: dict, cfg: dict) -> Optional[dict]:
     }
 
 
-def rank(quotes: dict[str, dict], cfg: dict) -> list[dict]:
+def rank(quotes: dict[str, dict], cfg: dict, limit: Optional[int] = -1) -> list[dict]:
     """
     quotes: {symbol: quote_dict} (quote must include its own 'symbol' or the key
-    is used). Returns the top-N ranked candidates for this cycle.
+    is used). Ranked by score, descending. limit=-1 uses scanner.top_n;
+    limit=None returns ALL scored symbols (full rankings for A0 persistence).
     """
-    top_n = cfg.get("scanner", {}).get("top_n", 30)
+    if limit == -1:
+        limit = cfg.get("scanner", {}).get("top_n", 30)
     scored = []
     for symbol, q in quotes.items():
         q = {**q, "symbol": q.get("symbol", symbol)}
@@ -64,4 +66,19 @@ def rank(quotes: dict[str, dict], cfg: dict) -> list[dict]:
     scored.sort(key=lambda x: x["score"], reverse=True)
     for i, s in enumerate(scored, 1):
         s["rank"] = i
-    return scored[:top_n]
+    return scored if limit is None else scored[:limit]
+
+
+def shadow_scan(quotes: dict[str, dict], cfg: dict) -> tuple[list[dict], list[dict]]:
+    """
+    Full point-in-time snapshot for A0 persistence: (ranked_all, rejected).
+    ranked_all = every scorable symbol with its rank; rejected = symbols with no
+    usable quote, each tagged with a reason — so filter thresholds and the
+    scanner's picks can be replayed and re-tuned later.
+    """
+    ranked = rank(quotes, cfg, limit=None)
+    scored_syms = {r["symbol"] for r in ranked}
+    rejected = [{"symbol": q.get("symbol", sym), "reason": "no_quote_data"}
+                for sym, q in quotes.items()
+                if q.get("symbol", sym) not in scored_syms]
+    return ranked, rejected

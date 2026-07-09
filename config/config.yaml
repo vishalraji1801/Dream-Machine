@@ -192,6 +192,7 @@ universe:
 
 scanner:
   top_n: 30               # candidates handed to the strategy engine each cycle
+  shadow_enabled: true    # A0: persist full point-in-time rankings every cycle
   w_pct_change: 1.0
   w_range_pos: 2.0
   w_gap: 0.5
