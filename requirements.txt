@@ -6,3 +6,8 @@ pandas
 ta
 pytest
 keyring
+
+# Web app (Phase: cross-device UI)
+fastapi
+uvicorn[standard]
+websockets
