@@ -29,8 +29,10 @@ from src.scanner import rank as scanner_rank
 from src.scanner import shadow_scan
 from src.state_store import StateStore
 from src.strategy import generate_signal, market_regime
+from src.profile_store import ProfileStore
 from src.tick_candle_builder import TickCandleBuilder
 from src.universe_builder import UniverseBuilder
+from src.volume_profile import RvolConfig, roll_profile, rvol as compute_rvol
 from src.telegram_controller import TelegramController
 from src.trade_db import TradeDB
 from src.trade_ledger import TradeLedger
@@ -154,6 +156,8 @@ def startup() -> dict:
         "events": EventCalendar(cfg),
         "universe_symbols": universe_symbols,
         "candles": candle_builder,
+        "profiles": ProfileStore(),
+        "rvol_cfg": RvolConfig(**cfg.get("universe", {}).get("rvol", {})),
     }
 
     saved = ctx["state"].load()
@@ -447,6 +451,44 @@ def _spread_ok(symbol: str, quote: dict, cfg: dict) -> bool:
     return True
 
 
+def _rvol_for(ctx: dict, symbol: str, quote: dict):
+    """Time-of-day RVOL from the stored profile + today's cumulative volume (A1).
+    None when no usable profile — the scanner then excludes it if require_rvol."""
+    store = ctx.get("profiles")
+    if store is None:
+        return None
+    try:
+        profile = store.load(symbol)
+        return compute_rvol(profile, float(quote.get("volume", 0.0) or 0.0),
+                            datetime.now(), ctx["rvol_cfg"])
+    except Exception:
+        return None
+
+
+def _roll_profiles(ctx: dict) -> None:
+    """A1 deliverable 4: at EOD, roll each symbol's volume profile forward from
+    today's tick-built candles (zero REST). Missing sessions are left for
+    backfill_profiles.py; never rolls on partial/absent data."""
+    builder = ctx.get("candles")
+    store = ctx.get("profiles")
+    if builder is None or store is None:
+        return
+    today = datetime.now().date()
+    rolled = 0
+    for sym in ctx["cfg"]["trading"]["watchlist"]:
+        try:
+            df = builder.get_candles(sym)
+            profile = store.load(sym)
+            if df is None or df.empty or profile is None:
+                continue
+            store.save(roll_profile(profile, today, df, ctx["rvol_cfg"]))
+            rolled += 1
+        except Exception as exc:
+            logger.warning(f"profile roll failed for {sym}: {exc}")
+    if rolled:
+        logger.info(f"Rolled {rolled} volume profiles forward for {today}")
+
+
 def _shadow_scan(ctx: dict) -> None:
     """A0: persist a full point-in-time scanner snapshot every cycle (rankings for
     ALL symbols + rejected-with-reason), so point-in-time universe history accrues
@@ -462,8 +504,9 @@ def _shadow_scan(ctx: dict) -> None:
         quotes = _get_quotes(ctx, watchlist)
         if not quotes:
             return
-        ranked, rejected = shadow_scan({s: {**quotes[s], "symbol": s} for s in quotes},
-                                       ctx["cfg"])
+        enriched = {s: {**quotes[s], "symbol": s, "rvol": _rvol_for(ctx, s, quotes[s])}
+                    for s in quotes}
+        ranked, rejected = shadow_scan(enriched, ctx["cfg"])
         db.record_scan(ranked, rejected=rejected)
     except Exception as exc:
         logger.warning(f"Shadow scan failed (non-fatal): {exc}")
@@ -755,6 +798,7 @@ def _send_daily_summary(ctx: dict) -> None:
     breakdown = ctx["ledger"].format_summary()
     if breakdown:
         ctx["alert"].send_raw(breakdown)
+    _roll_profiles(ctx)
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────

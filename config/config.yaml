@@ -197,6 +197,13 @@ universe:
   atr_pct_min: 1.0        # daily ATR as % of price — volatility floor
   atr_pct_max: 6.0        # volatility ceiling
   selection_lookback_days: 30
+  rvol:                   # A1: time-of-day relative-volume profiles
+    bucket_minutes: 15
+    window_sessions: 20
+    min_sessions: 10
+    staleness_sessions: 3
+    score_weight: 0.4     # scanner ranking weight for RVOL
+  require_rvol: false     # when true, a symbol with no usable RVOL is unrankable
 
 scanner:
   top_n: 30               # candidates handed to the strategy engine each cycle
