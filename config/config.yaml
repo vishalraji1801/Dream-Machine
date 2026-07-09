@@ -92,6 +92,14 @@ strategy:
   # Supertrend params
   supertrend_period: 10
   supertrend_mult: 3.0
+  # Multi-timeframe confirmation (SCRUM-108 / B2) — off until it beats its
+  # own no-MTF baseline in walk-forward. Trading TF signal must agree with the
+  # higher-TF trend or the signal is vetoed (fail-closed while warming up).
+  mtf_confirm:
+    enabled: false
+    higher_tf: "1hr"      # 1hr | 30min
+    rule: "ema_trend"     # ema_trend | supertrend_dir
+    ema: 50
   # ── Strategy library params (SCRUM-101) ──
   ec_fast: 20                 # ema_crossover fast/slow
   ec_slow: 50
