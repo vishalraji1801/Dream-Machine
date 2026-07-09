@@ -98,6 +98,25 @@ export interface Equity {
   trade_count: number;
 }
 
+export interface ConfigField {
+  key: string;
+  label: string;
+  type: "number" | "bool" | "select" | "time" | "text";
+  min: number | null;
+  max: number | null;
+  step: number | null;
+  unit: string;
+  options: string[];
+  help: string;
+  value: number | boolean | string | null;
+}
+
+export interface ConfigGroup {
+  section: string;
+  label: string;
+  fields: ConfigField[];
+}
+
 // ── calls ────────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -116,6 +135,12 @@ export const api = {
   pause: () => req("/api/control/pause", { method: "POST" }),
   resume: () => req("/api/control/resume", { method: "POST" }),
   squareoff: () => req("/api/control/squareoff", { method: "POST" }),
+  getConfig: () => req<{ groups: ConfigGroup[] }>("/api/config"),
+  putConfig: (updates: Record<string, Record<string, unknown>>) =>
+    req<{ saved: boolean; applies: string; groups: ConfigGroup[] }>("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ updates }),
+    }),
 };
 
 // Verify a token by calling a protected endpoint; returns true if accepted.

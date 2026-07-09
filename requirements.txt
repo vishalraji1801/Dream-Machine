@@ -11,3 +11,4 @@ keyring
 fastapi
 uvicorn[standard]
 websockets
+ruamel.yaml
