@@ -120,7 +120,7 @@ strategy:
   smc_lookback: 20            # smc
 
 risk:
-  total_capital: 500000
+  total_capital: 1000000   # paper campaign: Rs.10L virtual capital
   max_risk_per_trade_pct: 1.0
   max_open_positions: 3
   max_position_size_pct: 20.0
@@ -157,9 +157,9 @@ scheduler:
 data_feed:                   # tick-built candles (SCRUM-106): zero per-cycle REST
   candles_from_ticks: true
   seed_on_start: true        # one REST fetch per symbol at startup seeds history
-  seed_lookback_days: 3
+  seed_lookback_days: 12     # ~12 sessions of 15min so a 1hr EMA-50 MTF gate warms
   min_bars: 30               # REST fallback until this many bars exist per symbol
-  max_bars: 120
+  max_bars: 260              # deep enough for the higher-TF confirmation gate
 
 ai:
   overlay_enabled: true                      # apply a validated AI overlay at startup
