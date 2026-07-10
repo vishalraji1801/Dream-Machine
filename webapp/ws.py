@@ -7,13 +7,12 @@ query param: ws://host/ws/live?token=<token>. Same token, same constant-time
 compare as the REST guard.
 """
 import asyncio
-import hmac
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from src.logger import get_logger
 from webapp import stores
-from webapp.settings import get_settings
+from webapp.auth import token_is_valid
 from webapp.supervisor import get_supervisor
 
 logger = get_logger("ws")
@@ -39,8 +38,7 @@ def _snapshot() -> dict:
 @router.websocket("/ws/live")
 async def live(ws: WebSocket) -> None:
     token = ws.query_params.get("token", "")
-    settings = get_settings()
-    if not settings.token or not hmac.compare_digest(token, settings.token):
+    if not token_is_valid(token):
         await ws.close(code=1008)  # policy violation
         return
     await ws.accept()

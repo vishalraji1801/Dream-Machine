@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from webapp import ws
-from webapp.routers import backtest, config, control, logs, monitor, strategies
+from webapp.routers import auth_login, backtest, config, control, logs, monitor, strategies
 from webapp.settings import get_settings
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -53,6 +53,7 @@ def create_app() -> FastAPI:
         return {"ok": True, "service": "dream-machine", "version": "0.1.0",
                 "token_configured": settings.token is not None}
 
+    app.include_router(auth_login.router)
     app.include_router(monitor.router)
     app.include_router(control.router)
     app.include_router(config.router)

@@ -1,5 +1,5 @@
 import { NavLink, Outlet } from "react-router-dom";
-import { clearToken } from "../api";
+import { api, clearToken } from "../api";
 import { useLiveCtx } from "../LiveContext";
 
 const tabs = [
@@ -37,7 +37,12 @@ export default function Layout() {
             />
             <button
               className="text-xs text-muted hover:text-white"
-              onClick={() => {
+              onClick={async () => {
+                try {
+                  await api.logout();
+                } catch {
+                  /* revoke best-effort */
+                }
                 clearToken();
                 location.reload();
               }}
