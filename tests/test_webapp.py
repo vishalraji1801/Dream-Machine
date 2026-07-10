@@ -46,10 +46,10 @@ def test_protected_accepts_header_token(client):
     assert client.get("/api/status", headers=AUTH).status_code == 200
 
 
-def test_503_when_no_token_configured(no_token_client, tmp_path, monkeypatch):
-    # point the token file away so none is found
+def test_401_when_no_token_and_no_session(no_token_client, tmp_path, monkeypatch):
+    # no static token and no session -> must log in (401), auth is TOTP-based now
     monkeypatch.setattr("webapp.settings._TOKEN_FILE", str(tmp_path / "absent.txt"))
-    assert no_token_client.get("/api/status").status_code == 503
+    assert no_token_client.get("/api/status").status_code == 401
 
 
 # ── read contracts ────────────────────────────────────────────────────────────

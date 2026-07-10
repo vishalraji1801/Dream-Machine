@@ -58,15 +58,23 @@ def _market_closed_today() -> bool:
     return datetime.now().date().weekday() >= 5
 
 
-def run_auth() -> str:
+class AuthError(Exception):
+    """Kite login failed — carries a user-facing message (safe to surface)."""
+
+
+def authenticate_with_totp(totp: str) -> dict:
     """
-    Authenticate with Kite Connect. Returns the access token.
-    Saves it to KITE_ACCESS_TOKEN_PATH. Exits on failure.
+    Run the headless Kite login with a caller-supplied TOTP (no prompts, no
+    sys.exit). Server-side credentials (API key/secret, user id, password) are
+    read from the environment / credential store; only the TOTP comes from the
+    caller. Saves the access token to KITE_ACCESS_TOKEN_PATH and returns
+    {access_token, user_id, token_path}. Raises AuthError on any failure.
+
+    This is the shared core behind both the `bot auth` CLI and the web app login.
     """
-    if _market_closed_today() and "--force" not in sys.argv:
-        print("Market is closed today (weekend) — not starting.")
-        print("Use 'python auth.py --force' to authenticate anyway.")
-        sys.exit(1)
+    totp = (totp or "").strip()
+    if not totp:
+        raise AuthError("TOTP is required.")
 
     api_key    = os.getenv("KITE_API_KEY")
     api_secret = os.getenv("KITE_API_SECRET")
@@ -78,36 +86,47 @@ def run_auth() -> str:
         "ZERODHA_USER_ID": user_id,
     }.items() if not v]
     if missing:
-        print(f"ERROR: Missing from config/.env: {', '.join(missing)}")
-        sys.exit(1)
+        raise AuthError(f"Missing from config/.env: {', '.join(missing)}")
 
     password = _get_password(user_id)
     if not password:
-        print("ERROR: No password found. Run 'python auth.py --set-password' "
-              "or set ZERODHA_PASSWORD in config/.env")
-        sys.exit(1)
+        raise AuthError("No password found. Run 'python auth.py --set-password' "
+                        "or set ZERODHA_PASSWORD in config/.env")
 
-    totp = input("Enter TOTP: ").strip()
-    if not totp:
-        print("ERROR: TOTP is required.")
-        sys.exit(1)
-
-    print("Authenticating with Kite...")
     try:
         request_token = _headless_login(api_key, user_id, password, totp)
+        kite = KiteConnect(api_key=api_key)
+        session_data = kite.generate_session(request_token, api_secret=api_secret)
+        access_token = session_data["access_token"]
+    except AuthError:
+        raise
     except Exception as exc:
-        print(f"ERROR: Authentication failed — {exc}")
-        sys.exit(1)
-
-    kite = KiteConnect(api_key=api_key)
-    session_data = kite.generate_session(request_token, api_secret=api_secret)
-    access_token = session_data["access_token"]
+        raise AuthError(str(exc))
 
     with open(token_path, "w") as f:
         f.write(access_token)
+    return {"access_token": access_token, "user_id": user_id, "token_path": token_path}
 
-    print(f"Authentication successful. Token saved to {token_path}")
-    return access_token
+
+def run_auth() -> str:
+    """
+    CLI entry: prompt for TOTP, authenticate, save the token. Exits on failure.
+    """
+    if _market_closed_today() and "--force" not in sys.argv:
+        print("Market is closed today (weekend) — not starting.")
+        print("Use 'python auth.py --force' to authenticate anyway.")
+        sys.exit(1)
+
+    totp = input("Enter TOTP: ").strip()
+    print("Authenticating with Kite...")
+    try:
+        result = authenticate_with_totp(totp)
+    except AuthError as exc:
+        print(f"ERROR: Authentication failed — {exc}")
+        sys.exit(1)
+
+    print(f"Authentication successful. Token saved to {result['token_path']}")
+    return result["access_token"]
 
 
 def _headless_login(api_key: str, user_id: str, password: str, totp: str) -> str:

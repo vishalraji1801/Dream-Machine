@@ -36,12 +36,11 @@ persists and controls it through a file-backed command channel.
 # backend deps (into the venv)
 .venv/Scripts/python -m pip install -r requirements.txt
 
-# create the API token (writes config/webapp_token.txt, git-ignored)
-.venv/Scripts/python -m webapp gen-token
-
 # frontend deps + build (outputs to webapp/static)
 cd frontend && npm install && npm run build
 ```
+
+No token to configure — you log in with your Kite TOTP (same as `bot auth`).
 
 ## Run (production, single origin)
 
@@ -49,9 +48,10 @@ cd frontend && npm install && npm run build
 .venv/Scripts/python -m webapp            # serves API + PWA on 0.0.0.0:8000
 ```
 
-Or double-click `start_webapp.bat`. Open `http://localhost:8000`, paste the token
-once (stored in the browser). On the phone, use the browser's "Add to Home Screen"
-to install it as an app.
+Or double-click `start_webapp.bat`. Open `http://localhost:8000`, enter your
+**Kite TOTP** to sign in. This runs the same headless Kite login the bot uses:
+your API key/secret and password stay on the server, and signing in also refreshes
+the day's Kite access token. On the phone, use "Add to Home Screen" to install it.
 
 ## Run (development, hot reload)
 
@@ -64,12 +64,20 @@ cd frontend && npm run dev                # Vite on :5173, proxies /api and /ws
 
 1. Install Tailscale on the laptop and phone; sign into the same tailnet.
 2. On the phone open `http://<laptop-tailscale-ip>:8000`.
-3. Nothing is exposed publicly; the token is a second lock.
+3. Nothing is exposed publicly; the TOTP login is a second lock.
 
 ## Security
 
-- Token via `Authorization: Bearer <t>` or `X-API-Token`; constant-time compare.
-- `config/webapp_token.txt` and `webapp/static/` are git-ignored.
+- **Login is TOTP-based.** Entering your Kite TOTP runs the real headless Kite
+  login (auth.authenticate_with_totp); only a valid code succeeds, since only you
+  hold the authenticator. Success mints a session token the browser stores and
+  presents as `Authorization: Bearer` / `X-API-Token`. Sessions last ~18h (a
+  trading day) and are held in memory (restart = re-login). Logins are rate-limited.
+- Credentials (API key/secret, Zerodha password) never reach the browser — they
+  stay in `config/.env` / the OS credential store, server-side.
+- An optional static `WEBAPP_TOKEN` (env or `config/webapp_token.txt`, git-ignored)
+  is also accepted, for scripts/automation. `python -m webapp gen-token` creates one.
 - Starting the bot in LIVE mode requires an explicit confirm (real orders never
   start on an accidental tap).
 - Stop is graceful (bot squares off) via the command channel, not a hard kill.
+- `webapp/static/` is git-ignored (build artifact).

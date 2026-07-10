@@ -160,6 +160,12 @@ export interface StrategiesResp {
 
 export const api = {
   health: () => req<{ ok: boolean; token_configured: boolean }>("/api/health"),
+  login: (totp: string) =>
+    req<{ token: string; user_id: string }>("/api/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ totp }),
+    }),
+  logout: () => req("/api/auth/logout", { method: "POST" }),
   status: () => req<Status>("/api/status"),
   positions: () => req<PositionsResp>("/api/positions"),
   trades: (source?: string) =>
