@@ -6,6 +6,7 @@ import Controls from "./Controls";
 import Positions from "./Positions";
 import EquityChart from "./EquityChart";
 import Signals from "./Signals";
+import GateChecks from "./GateChecks";
 
 function Stat({ label, value, className = "" }: { label: string; value: string; className?: string }) {
   return (
@@ -58,7 +59,10 @@ export default function Dashboard() {
         <EquityChart equity={equity} />
       </div>
 
-      <Signals signals={signals} />
+      <div className="grid lg:grid-cols-2 gap-4">
+        <Signals signals={signals} />
+        <GateChecks status={status} />
+      </div>
 
       <footer className="text-center text-xs text-muted py-4">
         {status?.market} · token {status?.token_fresh_today ? "fresh" : "stale"}

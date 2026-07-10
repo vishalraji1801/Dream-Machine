@@ -8,6 +8,18 @@ persists and controls it through a file-backed command channel.
   Phone / Laptop PWA ──(Tailscale)──> FastAPI (:8000) ──manages──> main.py (subprocess)
 ```
 
+## Screens
+
+- **Dashboard** — mode/running/market, daily & net P&L, positions, equity curve,
+  signal feed, go-live gate checks, and controls (start / pause / resume /
+  square-off / stop; LIVE start needs confirm)
+- **Backtest** — run the Backtester over stored candles (background job), see
+  aggregate + per-symbol results
+- **Strategies** — view the registry, set the active strategy
+- **Logs** — tail any `*.log` with auto-refresh
+- **Settings** — edit risk / strategy / timing / scheduler params, validated,
+  comments preserved; applies on the next bot start
+
 ## Layout
 
 - `webapp/` — FastAPI backend
@@ -37,7 +49,9 @@ cd frontend && npm install && npm run build
 .venv/Scripts/python -m webapp            # serves API + PWA on 0.0.0.0:8000
 ```
 
-Open `http://localhost:8000`, paste the token once (stored in the browser).
+Or double-click `start_webapp.bat`. Open `http://localhost:8000`, paste the token
+once (stored in the browser). On the phone, use the browser's "Add to Home Screen"
+to install it as an app.
 
 ## Run (development, hot reload)
 

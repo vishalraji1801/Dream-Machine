@@ -6,6 +6,7 @@ const tabs = [
   { to: "/", label: "Dashboard", end: true },
   { to: "/backtest", label: "Backtest", end: false },
   { to: "/strategies", label: "Strategies", end: false },
+  { to: "/logs", label: "Logs", end: false },
   { to: "/settings", label: "Settings", end: false },
 ];
 

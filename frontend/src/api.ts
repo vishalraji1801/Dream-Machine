@@ -194,6 +194,11 @@ export const api = {
       method: "PUT",
       body: JSON.stringify({ name }),
     }),
+  logsList: () => req<{ files: { name: string; size: number; mtime: number }[] }>("/api/logs"),
+  logTail: (name: string, lines = 300) =>
+    req<{ name: string; lines: string[]; truncated: boolean }>(
+      `/api/logs/${encodeURIComponent(name)}?lines=${lines}`,
+    ),
 };
 
 // Verify a token by calling a protected endpoint; returns true if accepted.
