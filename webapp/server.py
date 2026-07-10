@@ -21,10 +21,21 @@ _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 
 class SPAStaticFiles(StaticFiles):
     """Serve real files; fall back to index.html on 404 so client-side routes
-    (e.g. a hard refresh on /settings) work. /api and /ws match earlier routers,
-    so this only affects front-end paths."""
+    (e.g. a hard refresh on /settings) work.
+
+    An unmatched /api or /ws request must NOT be served the HTML shell (that would
+    break JSON parsing) or a static-mount 405 — return a clean JSON 404 instead.
+    This also makes a version mismatch (e.g. a stale server missing a new route)
+    fail with a clear message rather than 'Method Not Allowed'."""
 
     async def get_response(self, path, scope):
+        full = scope.get("path", "")
+        if full.startswith("/api") or full.startswith("/ws"):
+            from starlette.responses import JSONResponse
+            return JSONResponse(
+                {"detail": "Unknown API endpoint — is the server up to date? Restart it."},
+                status_code=404,
+            )
         try:
             return await super().get_response(path, scope)
         except StarletteHTTPException as exc:
