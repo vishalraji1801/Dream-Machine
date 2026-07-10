@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from webapp import ws
-from webapp.routers import config, control, monitor
+from webapp.routers import backtest, config, control, monitor, strategies
 from webapp.settings import get_settings
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
@@ -56,6 +56,8 @@ def create_app() -> FastAPI:
     app.include_router(monitor.router)
     app.include_router(control.router)
     app.include_router(config.router)
+    app.include_router(backtest.router)
+    app.include_router(strategies.router)
     app.include_router(ws.router)
 
     # Serve the built PWA if present (production). Absent during backend-only dev.

@@ -6,6 +6,8 @@ import Login from "./components/Login";
 import Layout from "./components/Layout";
 import Dashboard from "./components/Dashboard";
 import Settings from "./components/Settings";
+import Backtest from "./components/Backtest";
+import Strategies from "./components/Strategies";
 
 export default function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
@@ -29,6 +31,8 @@ export default function App() {
         <Routes>
           <Route element={<Layout />}>
             <Route index element={<Dashboard />} />
+            <Route path="backtest" element={<Backtest />} />
+            <Route path="strategies" element={<Strategies />} />
             <Route path="settings" element={<Settings />} />
             <Route path="*" element={<Dashboard />} />
           </Route>

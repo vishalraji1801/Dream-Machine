@@ -4,6 +4,8 @@ import { useLiveCtx } from "../LiveContext";
 
 const tabs = [
   { to: "/", label: "Dashboard", end: true },
+  { to: "/backtest", label: "Backtest", end: false },
+  { to: "/strategies", label: "Strategies", end: false },
   { to: "/settings", label: "Settings", end: false },
 ];
 

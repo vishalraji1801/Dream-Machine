@@ -52,4 +52,7 @@ body {
   .label {
     @apply text-xs uppercase tracking-wide text-muted;
   }
+  .ctl {
+    @apply bg-panel2 border border-line rounded-lg px-2 py-1.5 text-sm outline-none focus:border-accent;
+  }
 }

@@ -117,6 +117,45 @@ export interface ConfigGroup {
   fields: ConfigField[];
 }
 
+export interface BacktestData {
+  timeframes: Record<string, { symbols: number; sample: string[] }>;
+}
+
+export interface BacktestAggregate {
+  total_trades: number;
+  wins: number;
+  losses: number;
+  win_rate: number;
+  net_pnl: number;
+  profit_factor: number | null;
+  gross_profit: number;
+  gross_loss: number;
+  symbols_tested: number;
+}
+
+export interface BacktestSymbolRow {
+  symbol: string;
+  total_trades: number;
+  net_pnl: number;
+  win_rate: number;
+  profit_factor: number | null;
+  max_drawdown: number;
+}
+
+export interface BacktestJob {
+  status: "running" | "done" | "error";
+  result: { aggregate: BacktestAggregate; per_symbol: BacktestSymbolRow[] } | null;
+  error: string | null;
+  strategy?: string;
+  timeframe?: string;
+}
+
+export interface StrategiesResp {
+  registered: string[];
+  active: string;
+  allowed: string[];
+}
+
 // ── calls ────────────────────────────────────────────────────────────────────
 
 export const api = {
@@ -140,6 +179,20 @@ export const api = {
     req<{ saved: boolean; applies: string; groups: ConfigGroup[] }>("/api/config", {
       method: "PUT",
       body: JSON.stringify({ updates }),
+    }),
+  backtestData: () => req<BacktestData>("/api/backtest/data"),
+  runBacktest: (body: {
+    strategy: string;
+    timeframe: string;
+    window: number;
+    overrides?: Record<string, unknown>;
+  }) => req<{ job_id: string }>("/api/backtest", { method: "POST", body: JSON.stringify(body) }),
+  backtestJob: (id: string) => req<BacktestJob>(`/api/backtest/${id}`),
+  strategies: () => req<StrategiesResp>("/api/strategies"),
+  setActiveStrategy: (name: string) =>
+    req<{ active: string; applies: string }>("/api/strategies/active", {
+      method: "PUT",
+      body: JSON.stringify({ name }),
     }),
 };
 
