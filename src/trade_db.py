@@ -153,6 +153,14 @@ class TradeDB:
         with self._lock, self._connect() as con:
             return [dict(r) for r in con.execute(q + " ORDER BY id", args)]
 
+    def snapshots(self, limit: Optional[int] = None) -> list[dict]:
+        """Cycle snapshots (open_positions, daily_pnl, trades_today, regime) in
+        time order — the source for the UI equity/P&L curve."""
+        q = "SELECT * FROM cycle_snapshots ORDER BY id"
+        with self._lock, self._connect() as con:
+            rows = [dict(r) for r in con.execute(q)]
+        return rows[-limit:] if limit else rows
+
     # ── Internals ───────────────────────────────────────────────────────────────
 
     @staticmethod

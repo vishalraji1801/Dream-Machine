@@ -33,6 +33,7 @@ from src.profile_store import ProfileStore
 from src.tick_candle_builder import TickCandleBuilder
 from src.universe_builder import UniverseBuilder
 from src.volume_profile import RvolConfig, roll_profile, rvol as compute_rvol
+from src.command_channel import CommandChannel
 from src.telegram_controller import TelegramController
 from src.trade_db import TradeDB
 from src.trade_ledger import TradeLedger
@@ -857,12 +858,38 @@ def run() -> int:
     )
     controller.start()
 
+    # Out-of-process control channel for the web supervisor (mirrors Telegram
+    # commands). Seek past any commands queued before this run started.
+    commands = CommandChannel()
+    commands.seek_to_end()
+
+    def _process_commands() -> None:
+        for entry in commands.poll():
+            cmd = entry.get("cmd")
+            if cmd == "stop":
+                logger.warning("Command channel: stop — graceful shutdown")
+                stop_event.set()
+            elif cmd == "pause":
+                pause_event.set()
+                logger.warning("Command channel: pause — new entries suspended")
+            elif cmd == "resume":
+                pause_event.clear()
+                logger.warning("Command channel: resume — entries re-enabled")
+            elif cmd == "square_off":
+                logger.warning("Command channel: square_off — flattening and pausing")
+                eod_square_off(ctx)
+                _save_state(ctx)
+                pause_event.set()  # don't re-enter after a manual flatten
+
     stop_reason = "normal shutdown"
     exit_code = 0
     hb = {"last": time.monotonic()}
     eod_done = None  # date of the last completed EOD — square off/summary once per day
     try:
         while not shutdown["requested"] and not stop_event.is_set():
+            _process_commands()
+            if stop_event.is_set():
+                break
             _maybe_heartbeat(ctx, hb)
             _relay_ai_outbox(ctx)
             if not ctx["calendar"].is_trading_day():
