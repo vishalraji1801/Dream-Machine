@@ -274,3 +274,10 @@ def market_regime(df: pd.DataFrame, cfg: dict) -> Regime:
     if last_close < last_ema * (1 - band):
         return "BEARISH"
     return "NEUTRAL"
+
+
+# ── Register the strategy library ─────────────────────────────────────────────
+# Imported last so the toolkit above is fully defined; strategy_library imports
+# these helpers, so this avoids a circular import.
+from src.strategy_library import REGISTRY as _LIBRARY   # noqa: E402
+STRATEGY_REGISTRY.update(_LIBRARY)

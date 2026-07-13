@@ -1,0 +1,10 @@
+name: donchian_trend_tsl
+# Trend-following — designed for strong trends (long+short); disabled in range/quiet.
+# validated:false until walk-forward OOS confirms (research/backtest only for now).
+regime_param_sets:
+  STRONG_TREND_UP:   {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: false}
+  STRONG_TREND_DOWN: {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: false}
+  RANGE:             {enabled: false}
+  QUIET:             {enabled: false}
+  default:           {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: false}
+regime_fit: {}

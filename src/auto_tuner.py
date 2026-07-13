@@ -30,10 +30,17 @@ from src.validation import walk_forward_rolling
 logger = get_logger("auto_tuner")
 
 # Small, bounded per-strategy sweep grids (all values inside the overlay hard
-# bounds). Empty — strategies were removed for a clean slate. Add an entry here
-# when you register a real strategy in src/strategy.py so the auto-tuner can
-# walk-forward tune it; tune_strategy also accepts an explicit grid_spec.
-DEFAULT_GRIDS: dict[str, dict[str, list]] = {}
+# bounds). Sweep candidates from the mined specs — unvalidated starting points.
+DEFAULT_GRIDS: dict[str, dict[str, list]] = {
+    "bb_mean_reversion":  {"bb_std": [2.0, 2.5, 3.0],
+                           "bb_buy_limit_offset_pct": [0.0, 2.0, 3.0, 5.0]},
+    "donchian_trend_tsl": {"donchian_lookback": [100, 150, 200, 250],
+                           "donchian_atr_mult": [3.0, 4.0, 5.0, 6.0]},
+    "supertrend":         {"supertrend_period": [7, 10, 14, 22],
+                           "supertrend_mult": [2.0, 3.0, 4.0]},
+    "orb_nifty":          {"orb_max_stop_cap_pts": [20, 30, 50],
+                           "orb_r_multiple": [1.5, 2.0, 3.0]},
+}
 
 # Bar an auto-selected winner must clear on stitched OUT-OF-SAMPLE trades.
 DEFAULT_ACCEPT = {"min_oos_trades": 30, "min_oos_pf": 1.2, "min_oos_net": 0.0}

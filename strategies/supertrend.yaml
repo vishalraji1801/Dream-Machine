@@ -1,0 +1,10 @@
+name: supertrend
+# Trend-following flip — designed for strong trends; disabled in range.
+# validated:false until walk-forward OOS confirms (research/backtest only for now).
+regime_param_sets:
+  STRONG_TREND_UP:   {supertrend_period: 10, supertrend_mult: 3.0, validated: false}
+  STRONG_TREND_DOWN: {supertrend_period: 10, supertrend_mult: 3.0, validated: false}
+  RANGE:             {enabled: false}
+  QUIET:             {enabled: false}
+  default:           {supertrend_period: 10, supertrend_mult: 3.0, validated: false}
+regime_fit: {}

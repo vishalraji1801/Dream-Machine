@@ -70,8 +70,8 @@ def test_dispatcher_routes_to_registered_strategy(cfg):
     assert sig.stop_loss < sig.entry_price < sig.target
 
 
-def test_registry_empty_by_default():
-    assert STRATEGY_REGISTRY == {}
+def test_registry_has_library_strategies():
+    assert {"bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty"} <= set(STRATEGY_REGISTRY)
 
 
 # ── indicator toolkit ────────────────────────────────────────────────────────
