@@ -6,6 +6,7 @@ backtest) so a single query can compare all three. This is what the scheduled
 Claude agents read; it replaces scattered CSVs for analysis purposes (the
 per-day CSV ledger in trade_ledger.py is kept for human-readable journals).
 """
+import json
 import os
 import sqlite3
 import threading
@@ -60,6 +61,16 @@ CREATE TABLE IF NOT EXISTS cycle_snapshots (
     daily_pnl     REAL,
     trades_today  INTEGER,
     regime        TEXT
+);
+CREATE TABLE IF NOT EXISTS routing (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source         TEXT NOT NULL,        -- live | paper | backtest (the mode)
+    run_id         TEXT,
+    config_version TEXT,
+    ts             TEXT NOT NULL,
+    regime         TEXT NOT NULL,
+    confidence     REAL,
+    active         TEXT                  -- JSON: [{name, weight, fit_pf, oos_ref, regime}]
 );
 """
 
@@ -133,6 +144,17 @@ class TradeDB:
             (self._as_iso(ts or datetime.now()), open_positions,
              round(daily_pnl, 2), trades_today, regime))
 
+    def record_routing(self, *, source: str, regime: str, confidence: float,
+                       active: list, run_id: Optional[str] = None,
+                       config_version: Optional[str] = None, ts=None) -> None:
+        """Persist a routing decision (regime + chosen strategies/weights) per
+        cycle, tagged with mode/run_id/config_version for later analysis."""
+        self._exec(
+            "INSERT INTO routing (source, run_id, config_version, ts, regime, confidence, active) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (source, run_id, config_version, self._as_iso(ts or datetime.now()),
+             regime, round(float(confidence), 4), json.dumps(active or [])))
+
     # ── Reads (used by tests and AI agents) ─────────────────────────────────────
 
     def trades(self, source: Optional[str] = None) -> list[dict]:
@@ -160,6 +182,19 @@ class TradeDB:
         with self._lock, self._connect() as con:
             rows = [dict(r) for r in con.execute(q)]
         return rows[-limit:] if limit else rows
+
+    def routing(self, source: Optional[str] = None) -> list[dict]:
+        """Persisted routing decisions in time order; `active` decoded from JSON."""
+        q = "SELECT * FROM routing"
+        args: tuple = ()
+        if source:
+            q += " WHERE source = ?"
+            args = (source,)
+        with self._lock, self._connect() as con:
+            rows = [dict(r) for r in con.execute(q + " ORDER BY id", args)]
+        for r in rows:
+            r["active"] = json.loads(r["active"]) if r.get("active") else []
+        return rows
 
     # ── Internals ───────────────────────────────────────────────────────────────
 

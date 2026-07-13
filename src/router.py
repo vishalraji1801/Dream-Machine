@@ -42,6 +42,12 @@ class ActiveStrategy:
     oos_ref: str = ""
 
 
+def routing_records(active: list) -> list:
+    """Serialize an ActiveStrategy list for ledger persistence (JSON-friendly)."""
+    return [{"name": a.name, "weight": a.weight, "fit_pf": a.fit_pf,
+             "regime": a.regime, "oos_ref": a.oos_ref} for a in active]
+
+
 def route(regime: RegimeState, strategies: list[StrategyMeta],
           premarket: PremarketAllocation, cfg: RouterConfig,
           prev_weights: Optional[dict] = None) -> list[ActiveStrategy]:
