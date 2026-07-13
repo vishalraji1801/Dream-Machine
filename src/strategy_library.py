@@ -18,14 +18,16 @@ from datetime import time as dtime
 
 import pandas as pd
 
-from src.strategy import TradeSignal, _atr, _hold, _sl_target, _supertrend_dir
+# NOTE: the strategy toolkit (TradeSignal, _atr, ...) lives in src.strategy, which
+# imports THIS module to populate its registry. To avoid a circular import we pull
+# the toolkit lazily inside each function (by call time, src.strategy is fully
+# loaded), so strategy_library can be imported in any order.
 
 
-# ── E-005 · Bollinger mean-reversion pullback (daily, long-only) ──────────────
-
-def bb_mean_reversion(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
+def bb_mean_reversion(symbol: str, df: pd.DataFrame, cfg: dict):
     """Buy oversold pullbacks *within* an uptrend: above the long MA, closing
     below the lower Bollinger band; enter on a buy-limit below, exit at the mean."""
+    from src.strategy import TradeSignal, _atr, _hold
     ma_period = cfg.get("bb_ma_period", 200)
     bb_period = cfg.get("bb_period", 20)
     bb_std = cfg.get("bb_std", 2.5)
@@ -54,9 +56,10 @@ def bb_mean_reversion(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
 
 # ── E-003 · Donchian 200-day breakout + ATR trailing stop (daily, long+short) ─
 
-def donchian_trend_tsl(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
+def donchian_trend_tsl(symbol: str, df: pd.DataFrame, cfg: dict):
     """Go long on a new N-day high close, short on a new N-day low close; ride via
     an ATR trailing stop (the bot's trailing-SL manages the exit)."""
+    from src.strategy import TradeSignal, _atr, _hold
     n = cfg.get("donchian_lookback", 200)
     atr_mult = cfg.get("donchian_atr_mult", 6.0)
     ride = cfg.get("donchian_ride_atr", 20)
@@ -84,8 +87,9 @@ def donchian_trend_tsl(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
 
 # ── E-001 · Supertrend flip (intraday) ────────────────────────────────────────
 
-def supertrend(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
+def supertrend(symbol: str, df: pd.DataFrame, cfg: dict):
     """Enter on a Supertrend direction flip; SL/target from _sl_target (pct or ATR)."""
+    from src.strategy import TradeSignal, _hold, _sl_target, _supertrend_dir
     period = cfg.get("supertrend_period", 10)
     mult = cfg.get("supertrend_mult", 3.0)
     direction = _supertrend_dir(df, period, mult)
@@ -104,10 +108,11 @@ def supertrend(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
 
 # ── E-008 · Opening Range Breakout — Nifty/stocks (intraday, NSE) ─────────────
 
-def orb_nifty(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
+def orb_nifty(symbol: str, df: pd.DataFrame, cfg: dict):
     """Break of the opening range (09:15→or_end) high/low, volume-confirmed, with a
     CAPPED stop so a wide OR doesn't oversize risk. (Two-trades/day is enforced by
     the RiskManager, not the signal.)"""
+    from src.strategy import TradeSignal, _hold
     if "timestamp" not in df.columns:
         return _hold(symbol, "no_timestamp")
     or_end = cfg.get("orb_or_end", "09:30")
