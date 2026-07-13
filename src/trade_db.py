@@ -6,6 +6,7 @@ backtest) so a single query can compare all three. This is what the scheduled
 Claude agents read; it replaces scattered CSVs for analysis purposes (the
 per-day CSV ledger in trade_ledger.py is kept for human-readable journals).
 """
+import json
 import os
 import sqlite3
 import threading
@@ -31,6 +32,7 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl          REAL NOT NULL,
     costs        REAL DEFAULT 0,
     exit_reason  TEXT,
+    regime       TEXT,                  -- market regime at entry (for regime_fit)
     recorded_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS signals (
@@ -61,6 +63,16 @@ CREATE TABLE IF NOT EXISTS cycle_snapshots (
     trades_today  INTEGER,
     regime        TEXT
 );
+CREATE TABLE IF NOT EXISTS routing (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    source         TEXT NOT NULL,        -- live | paper | backtest (the mode)
+    run_id         TEXT,
+    config_version TEXT,
+    ts             TEXT NOT NULL,
+    regime         TEXT NOT NULL,
+    confidence     REAL,
+    active         TEXT                  -- JSON: [{name, weight, fit_pf, oos_ref, regime}]
+);
 """
 
 
@@ -79,6 +91,9 @@ class TradeDB:
         cols = {r[1] for r in con.execute("PRAGMA table_info(scanner_rankings)")}
         if "reason" not in cols:
             con.execute("ALTER TABLE scanner_rankings ADD COLUMN reason TEXT")
+        tcols = {r[1] for r in con.execute("PRAGMA table_info(trades)")}
+        if "regime" not in tcols:
+            con.execute("ALTER TABLE trades ADD COLUMN regime TEXT")
         con.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -95,15 +110,15 @@ class TradeDB:
     def record_trade(self, *, source: str, symbol: str, direction: str, quantity: int,
                      entry_price: float, exit_price: float, entry_time, exit_time,
                      pnl: float, costs: float = 0.0, exit_reason: str = "",
-                     strategy: Optional[str] = None) -> None:
+                     strategy: Optional[str] = None, regime: Optional[str] = None) -> None:
         row = (source, strategy, symbol, direction, quantity,
                round(entry_price, 2), round(exit_price, 2),
                self._as_iso(entry_time), self._as_iso(exit_time),
-               round(pnl, 2), round(costs, 2), exit_reason, self._now())
+               round(pnl, 2), round(costs, 2), exit_reason, regime, self._now())
         self._exec(
             "INSERT INTO trades (source, strategy, symbol, direction, quantity, "
-            "entry_price, exit_price, entry_time, exit_time, pnl, costs, exit_reason, recorded_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            "entry_price, exit_price, entry_time, exit_time, pnl, costs, exit_reason, regime, recorded_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
     def record_signal(self, *, source: str, symbol: str, direction: str, taken: bool,
                       reason: str = "", strategy: Optional[str] = None, ts=None) -> None:
@@ -133,6 +148,17 @@ class TradeDB:
             (self._as_iso(ts or datetime.now()), open_positions,
              round(daily_pnl, 2), trades_today, regime))
 
+    def record_routing(self, *, source: str, regime: str, confidence: float,
+                       active: list, run_id: Optional[str] = None,
+                       config_version: Optional[str] = None, ts=None) -> None:
+        """Persist a routing decision (regime + chosen strategies/weights) per
+        cycle, tagged with mode/run_id/config_version for later analysis."""
+        self._exec(
+            "INSERT INTO routing (source, run_id, config_version, ts, regime, confidence, active) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (source, run_id, config_version, self._as_iso(ts or datetime.now()),
+             regime, round(float(confidence), 4), json.dumps(active or [])))
+
     # ── Reads (used by tests and AI agents) ─────────────────────────────────────
 
     def trades(self, source: Optional[str] = None) -> list[dict]:
@@ -160,6 +186,19 @@ class TradeDB:
         with self._lock, self._connect() as con:
             rows = [dict(r) for r in con.execute(q)]
         return rows[-limit:] if limit else rows
+
+    def routing(self, source: Optional[str] = None) -> list[dict]:
+        """Persisted routing decisions in time order; `active` decoded from JSON."""
+        q = "SELECT * FROM routing"
+        args: tuple = ()
+        if source:
+            q += " WHERE source = ?"
+            args = (source,)
+        with self._lock, self._connect() as con:
+            rows = [dict(r) for r in con.execute(q + " ORDER BY id", args)]
+        for r in rows:
+            r["active"] = json.loads(r["active"]) if r.get("active") else []
+        return rows
 
     # ── Internals ───────────────────────────────────────────────────────────────
 
