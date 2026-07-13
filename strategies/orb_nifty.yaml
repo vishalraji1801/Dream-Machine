@@ -1,0 +1,10 @@
+name: orb_nifty
+# Opening-range breakout — designed for directional/high-vol opens; off in quiet.
+# validated:false until walk-forward OOS confirms (research/backtest only for now).
+regime_param_sets:
+  STRONG_TREND_UP:   {orb_max_stop_cap_pts: 30, orb_r_multiple: 2.0, validated: false}
+  STRONG_TREND_DOWN: {orb_max_stop_cap_pts: 30, orb_r_multiple: 2.0, validated: false}
+  HIGH_VOL_CHOP:     {orb_max_stop_cap_pts: 30, orb_r_multiple: 2.0, validated: false}
+  QUIET:             {enabled: false}
+  default:           {orb_max_stop_cap_pts: 30, orb_r_multiple: 2.0, validated: false}
+regime_fit: {}
