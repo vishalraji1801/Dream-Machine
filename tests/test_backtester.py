@@ -399,3 +399,22 @@ def test_close_fill_uses_signal_close(cfg):
     with patch("src.backtester.generate_signal", side_effect=_signal_on_first_candle()):
         result = Backtester(cfg).run(candles)
     assert result.trades[0].entry_price == 100.0   # signal-candle close
+
+
+def test_order_value_cap_shrinks_not_skips():
+    """High-priced stock: sizing shrinks to fit order_value_cap instead of skipping."""
+    from src.backtester import Backtester
+    cfg = {
+        "strategy": {"name": "x", "sl_mode": "pct", "stop_loss_pct": 1.0, "target_pct": 2.0},
+        "risk": {"total_capital": 1_000_000, "max_risk_per_trade_pct": 1.0,
+                 "max_position_size_pct": 50, "order_value_cap": 120_000,
+                 "max_open_positions": 3, "max_daily_loss": 100000, "max_trades_per_day": 100,
+                 "stop_loss_pct": 1.0, "target_pct": 2.0, "trailing_sl_enabled": False},
+        "trading": {"square_off_time": "15:15", "entry_start_time": None, "entry_end_time": None},
+        "backtest": {"fill_mode": "close"},
+    }
+    bt = Backtester(cfg)
+    # ₹3500 stock: risk-qty would be huge; must shrink to <= 120000/3500 = 34 shares
+    qty = bt._calculate_quantity(3500.0, 3465.0)
+    assert 0 < qty <= 34
+    assert qty * 3500 <= 120_000

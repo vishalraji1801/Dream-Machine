@@ -144,8 +144,11 @@ class RiskManager:
             return 0
         max_risk = self._r["total_capital"] * self._r["max_risk_per_trade_pct"] / 100
         qty = int(max_risk / risk_per_share)
-        max_pos = self._r["total_capital"] * self._r["max_position_size_pct"] / 100
-        if qty * entry_price > max_pos:
-            qty = int(max_pos / entry_price)
+        # clamp to the tighter of max-position-value and per-order value cap —
+        # SHRINK to fit, never skip (a pricey stock must still be tradeable).
+        value_cap = min(self._r["total_capital"] * self._r["max_position_size_pct"] / 100,
+                        self._r["order_value_cap"])
+        if entry_price > 0 and qty * entry_price > value_cap:
+            qty = int(value_cap / entry_price)
         logger.info(f"Qty={qty} | entry={entry_price} sl={stop_loss} max_risk=Rs.{max_risk:.0f}")
-        return qty
+        return max(qty, 0)

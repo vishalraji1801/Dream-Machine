@@ -222,10 +222,8 @@ class Backtester:
                 qty = self._calculate_quantity(entry_price, signal.stop_loss)
                 if qty <= 0:
                     continue
-                order_value = entry_price * qty
-                max_pos_value = self._r["total_capital"] * self._r["max_position_size_pct"] / 100
-                if order_value > self._r["order_value_cap"] or order_value > max_pos_value:
-                    continue
+                # sizing already shrinks to fit order_value_cap and max_position;
+                # no skip needed — a high-priced stock just takes a smaller size.
                 open_pos[sym] = _OpenPosition(
                     symbol=sym, direction=signal.direction, quantity=qty,
                     entry_price=entry_price, stop_loss=signal.stop_loss,
@@ -295,10 +293,12 @@ class Backtester:
             return 0
         max_risk = self._r["total_capital"] * self._r["max_risk_per_trade_pct"] / 100
         qty = int(max_risk / risk_per_share)
-        max_pos = self._r["total_capital"] * self._r["max_position_size_pct"] / 100
-        if qty * entry_price > max_pos:
-            qty = int(max_pos / entry_price)
-        return qty
+        # shrink to the tighter of max-position-value and per-order value cap
+        value_cap = min(self._r["total_capital"] * self._r["max_position_size_pct"] / 100,
+                        self._r["order_value_cap"])
+        if entry_price > 0 and qty * entry_price > value_cap:
+            qty = int(value_cap / entry_price)
+        return max(qty, 0)
 
     @staticmethod
     def _last_close(df: pd.DataFrame, index: dict, ts, fallback: float) -> float:
