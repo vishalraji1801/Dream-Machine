@@ -91,6 +91,25 @@ strategy:
     higher_tf: "1hr"      # 1hr | 30min
     rule: "ema_trend"     # ema_trend | supertrend_dir
     ema: 50
+  # ── Strategy library (YouTube-mined; ALL values are unvalidated sweep starts) ──
+  # E-005 Bollinger mean-reversion pullback (DAILY, long-only)
+  bb_ma_period: 200
+  bb_period: 20
+  bb_std: 2.5
+  bb_buy_limit_offset_pct: 3.0
+  bb_atr_stop_mult: 3.0
+  # E-003 Donchian 200-day breakout + ATR trailing stop (DAILY, long+short)
+  donchian_lookback: 200
+  donchian_atr_mult: 6.0
+  donchian_ride_atr: 20
+  # E-001 Supertrend flip (intraday) — uses supertrend_period/mult + sl_mode
+  supertrend_period: 10
+  supertrend_mult: 3.0
+  # E-008 Opening Range Breakout (intraday, NSE)
+  orb_or_end: "09:30"
+  orb_max_stop_cap_pts: 30
+  orb_r_multiple: 2.0
+  orb_volume_confirm: true
 
 risk:
   total_capital: 1000000   # paper campaign: Rs.10L virtual capital
@@ -139,7 +158,7 @@ ai:
   overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist
   telegram_outbox: "logs/telegram_outbox.txt"  # AI writes here; the bot relays to Telegram
   # Hard bounds the overlay can never exceed (the safety sandbox):
-  allowed_strategies: []   # populate as real strategies are registered; empty = overlay can't switch strategy
+  allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty"]
   min_stop_loss_pct: 0.5
   max_stop_loss_pct: 2.0
   min_target_pct: 0.5
