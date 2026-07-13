@@ -107,6 +107,39 @@ def param_set_for(meta: StrategyMeta, regime, mode: str) -> Optional[ParamSet]:
     return ps
 
 
+def bounded_param_set(meta: StrategyMeta, regime, mode: str,
+                      bounds: Optional[dict] = None, on_alert=None) -> Optional[ParamSet]:
+    """
+    Like param_set_for, but every value must pass the hard bounds. An out-of-bounds
+    set is rejected and we fall back to the strategy's `default` set (if that is
+    valid and in bounds); otherwise the strategy is disabled. Every fallback/reject
+    fires an alert. This is the enforcement point the spec requires.
+    """
+    from src.adaptive_bounds import validate_params
+
+    ps = param_set_for(meta, regime, mode)
+    if ps is None:
+        return None
+    err = validate_params(ps.params, bounds)
+    if err is None:
+        return ps
+
+    key = _regime_key(regime)
+    if on_alert:
+        on_alert(f"{meta.name} {key}: {err} — falling back to default")
+    logger.warning(f"{meta.name} {key}: adaptive param {err} — falling back to default")
+
+    default = meta.regime_param_sets.get("default")
+    if (default and default.enabled and (default.validated or mode in RESEARCH_MODES)
+            and validate_params(default.params, bounds) is None):
+        return default
+
+    if on_alert:
+        on_alert(f"{meta.name} {key}: default also out of bounds — strategy disabled")
+    logger.error(f"{meta.name} {key}: no in-bounds param set — strategy disabled")
+    return None
+
+
 def fit_for(meta: StrategyMeta, regime, min_trades: int = 30) -> Optional[RegimeFit]:
     """The measured fit for a regime, or None if absent / below the sample floor
     (the router treats None as neutral, never as an edge)."""

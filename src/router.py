@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from src.regime import Regime, RegimeState
-from src.strategy_meta import ParamSet, StrategyMeta, fit_for, param_set_for
+from src.strategy_meta import ParamSet, StrategyMeta, bounded_param_set, fit_for
 
 
 @dataclass(frozen=True)
@@ -50,14 +50,16 @@ def routing_records(active: list) -> list:
 
 def route(regime: RegimeState, strategies: list[StrategyMeta],
           premarket: PremarketAllocation, cfg: RouterConfig,
-          prev_weights: Optional[dict] = None) -> list[ActiveStrategy]:
+          prev_weights: Optional[dict] = None,
+          bounds: Optional[dict] = None, on_alert=None) -> list[ActiveStrategy]:
     if regime.regime is Regime.UNKNOWN:
         return []
 
-    # eligible = has a usable (validated-in-mode, enabled) set AND enough-sample fit
+    # eligible = has a usable (validated-in-mode, enabled, in-bounds) set AND
+    # enough-sample fit. Out-of-bounds sets fall back to default or are dropped.
     eligible = []
     for meta in strategies:
-        ps = param_set_for(meta, regime.regime, cfg.mode)
+        ps = bounded_param_set(meta, regime.regime, cfg.mode, bounds, on_alert)
         if ps is None:
             continue
         fit = fit_for(meta, regime.regime, cfg.min_trades)
