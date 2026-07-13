@@ -32,6 +32,7 @@ CREATE TABLE IF NOT EXISTS trades (
     pnl          REAL NOT NULL,
     costs        REAL DEFAULT 0,
     exit_reason  TEXT,
+    regime       TEXT,                  -- market regime at entry (for regime_fit)
     recorded_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS signals (
@@ -90,6 +91,9 @@ class TradeDB:
         cols = {r[1] for r in con.execute("PRAGMA table_info(scanner_rankings)")}
         if "reason" not in cols:
             con.execute("ALTER TABLE scanner_rankings ADD COLUMN reason TEXT")
+        tcols = {r[1] for r in con.execute("PRAGMA table_info(trades)")}
+        if "regime" not in tcols:
+            con.execute("ALTER TABLE trades ADD COLUMN regime TEXT")
         con.commit()
 
     def _connect(self) -> sqlite3.Connection:
@@ -106,15 +110,15 @@ class TradeDB:
     def record_trade(self, *, source: str, symbol: str, direction: str, quantity: int,
                      entry_price: float, exit_price: float, entry_time, exit_time,
                      pnl: float, costs: float = 0.0, exit_reason: str = "",
-                     strategy: Optional[str] = None) -> None:
+                     strategy: Optional[str] = None, regime: Optional[str] = None) -> None:
         row = (source, strategy, symbol, direction, quantity,
                round(entry_price, 2), round(exit_price, 2),
                self._as_iso(entry_time), self._as_iso(exit_time),
-               round(pnl, 2), round(costs, 2), exit_reason, self._now())
+               round(pnl, 2), round(costs, 2), exit_reason, regime, self._now())
         self._exec(
             "INSERT INTO trades (source, strategy, symbol, direction, quantity, "
-            "entry_price, exit_price, entry_time, exit_time, pnl, costs, exit_reason, recorded_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
+            "entry_price, exit_price, entry_time, exit_time, pnl, costs, exit_reason, regime, recorded_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)", row)
 
     def record_signal(self, *, source: str, symbol: str, direction: str, taken: bool,
                       reason: str = "", strategy: Optional[str] = None, ts=None) -> None:
