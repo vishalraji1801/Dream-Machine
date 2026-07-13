@@ -67,6 +67,13 @@ def compute_market_state(df: pd.DataFrame, cfg: Optional[dict] = None,
     if n == 0:
         return MarketState(0, 0, 0, 0, 0, 0, 0, 0, 0.0, breadth, 0, config_version)
 
+    # too few bars for the indicators — return a minimal state; the classifier
+    # treats n_bars < min_bars as UNKNOWN, so this never mislabels. (Also avoids
+    # ta raising on windows longer than the data.)
+    if n < min_bars_needed(cfg):
+        c = float(df["close"].iloc[-1])
+        return MarketState(c, c, c, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, breadth, n, config_version)
+
     close = float(df["close"].iloc[-1])
     ema_fast = _last(EMAIndicator(df["close"], window=_cfg(cfg, "ms_ema_fast")).ema_indicator(), close)
     slow_win = _cfg(cfg, "ms_ema_slow")
