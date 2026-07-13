@@ -170,6 +170,13 @@ def startup() -> dict:
             f"P&L Rs.{saved['daily_pnl']:.2f}, {saved['trades_today']} trades today."
         )
 
+    if cfg["strategy"].get("router_enabled"):
+        from src.live_router import LiveRouter
+        ctx["live_router"] = LiveRouter(cfg, mode=ctx["source"], db=ctx["db"])
+        names = [m.name for m in ctx["live_router"].metas]
+        logger.warning(f"Regime router ENABLED ({ctx['source']}) — routing among {names}")
+        alert.send_raw(f"Regime router ENABLED ({ctx['source']}) — {len(names)} strategies loaded")
+
     _write_daily_universe(ctx)
     logger.info("All modules initialised — bot ready")
     return ctx
@@ -343,16 +350,24 @@ def _scan_entries(ctx: dict) -> None:
         logger.warning("Skipping entry scan — quote fetch failed")
         return
 
-    # Dynamic scanner (V2 P3): rank the pool, trade the top-N. Falls through to
-    # the full pool when the universe is disabled.
-    if universe_on:
+    # Dynamic scanner (V2 P3): rank the pool, trade the top-N. Active when the
+    # universe is on OR scanner.select_top_n is set (rank the watchlist directly).
+    top_n = cfg.get("scanner", {}).get("select_top_n", 0)
+    if universe_on or top_n:
         ranked = scanner_rank({s: {**quotes[s], "symbol": s} for s in quotes}, cfg)
         if ctx.get("db"):
             ctx["db"].record_scan(ranked)
         candidates = [r["symbol"] for r in ranked]
+        if top_n:
+            candidates = candidates[:top_n]
         logger.info(f"Scanner shortlist: {len(candidates)} of {len(pool)} names")
     else:
         candidates = pool
+
+    # Regime router path: it selects strategy+params+weights per regime.
+    if ctx.get("live_router") is not None:
+        _router_scan(ctx, candidates, quotes)
+        return
 
     regime = _get_regime(ctx)
     if regime == "NEUTRAL":
@@ -405,6 +420,57 @@ def _scan_entries(ctx: dict) -> None:
         _alert_signal(ctx, symbol, signal, "ENTERING")
         _execute_entry(ctx, symbol, signal, qty)
         break  # one entry per cycle to stay within position limits
+
+
+def _router_scan(ctx: dict, candidates: list, quotes: dict) -> None:
+    """Regime-router entry path: classify regime, route to active strategies, then
+    trade the scanner's candidates with each active strategy's params, sized by its
+    weight. Trades nothing when no strategy has a positive learned fit this regime."""
+    cfg = ctx["cfg"]
+    risk = ctx["risk"]
+    positions = ctx["positions"]
+    router = ctx["live_router"]
+
+    index_df = _get_candles(ctx, cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
+    active = router.step(index_df)
+    if not active:
+        logger.info("Router: no active strategy in this regime — no entries")
+        return
+
+    margin = _get_margin(ctx)
+    open_symbols = {p.symbol for p in positions.get_open_positions()}
+    for symbol in candidates:
+        if symbol not in quotes or not _spread_ok(symbol, quotes[symbol], cfg):
+            continue
+        df = _get_candles(ctx, symbol)
+        if df is None or df.empty:
+            continue
+        sigs = router.signals_for(symbol, df)
+        if not sigs:
+            continue
+        signal, astrat = sigs[0]                      # highest-weight active strategy
+        qty = int(risk.calculate_quantity(signal.entry_price, signal.stop_loss) * astrat.weight)
+        if qty <= 0:
+            _db_signal(ctx, symbol, signal.direction, taken=False,
+                       reason="zero_quantity", strategy=astrat.name)
+            continue
+        order_value = signal.entry_price * qty
+        ok, reason = risk.check_pre_trade(order_value, margin, positions.open_count())
+        if not ok:
+            _db_signal(ctx, symbol, signal.direction, taken=False, reason=reason, strategy=astrat.name)
+            _alert_signal(ctx, symbol, signal, f"SKIPPED: {reason}")
+            continue
+        sector_ok, sector_reason = risk.check_sector_cap(symbol, list(open_symbols))
+        if not sector_ok:
+            _db_signal(ctx, symbol, signal.direction, taken=False, reason=sector_reason, strategy=astrat.name)
+            continue
+        # tag the entry so the exit records strategy + regime (feeds the learned map)
+        ctx.setdefault("entry_tags", {})[symbol] = (astrat.name, router.regime.regime.value)
+        _db_signal(ctx, symbol, signal.direction, taken=True, strategy=astrat.name)
+        _alert_signal(ctx, symbol, signal,
+                      f"ENTERING [{astrat.name} w{astrat.weight:.2f} {router.regime.regime.value}]")
+        _execute_entry(ctx, symbol, signal, qty)
+        break                                          # one entry per cycle
 
 
 def _within_entry_window(cfg: dict) -> bool:
@@ -710,9 +776,11 @@ def _db_trade(ctx: dict, pos, exit_price: float, pnl: float, costs: float, reaso
     db = ctx.get("db")
     if db is None:
         return
+    tag = ctx.get("entry_tags", {}).pop(pos.symbol, None)   # (strategy, regime) if router-entered
     db.record_trade(
         source=ctx.get("source", "live"),
-        strategy=ctx["cfg"]["strategy"].get("name"),
+        strategy=tag[0] if tag else ctx["cfg"]["strategy"].get("name"),
+        regime=tag[1] if tag else None,
         symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,
         entry_price=pos.entry_price, exit_price=exit_price,
         entry_time=pos.entry_time, exit_time=datetime.now(),
@@ -720,13 +788,14 @@ def _db_trade(ctx: dict, pos, exit_price: float, pnl: float, costs: float, reaso
     )
 
 
-def _db_signal(ctx: dict, symbol: str, direction: str, taken: bool, reason: str = "") -> None:
+def _db_signal(ctx: dict, symbol: str, direction: str, taken: bool, reason: str = "",
+               strategy: str = None) -> None:
     db = ctx.get("db")
     if db is None:
         return
     db.record_signal(source=ctx.get("source", "live"), symbol=symbol,
                      direction=direction, taken=taken, reason=reason,
-                     strategy=ctx["cfg"]["strategy"].get("name"))
+                     strategy=strategy or ctx["cfg"]["strategy"].get("name"))
 
 
 def _alert_signal(ctx: dict, symbol: str, signal, action: str) -> None:

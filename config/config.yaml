@@ -65,7 +65,8 @@ strategy:
   # src/strategy.py STRATEGY_REGISTRY once a real strategy is added; until then the
   # engine returns HOLD (no trades). The params below are the shared indicator
   # toolkit + regime/MTF/SL config that any strategy draws on.
-  name: ""
+  name: "supertrend"          # active single strategy (used when router_enabled: false)
+  router_enabled: true        # regime router: pick strategy+params+weights per regime
   ema_fast: 9
   ema_slow: 21
   ema_crossover_lookback: 3
@@ -195,11 +196,30 @@ universe:
   require_rvol: false     # when true, a symbol with no usable RVOL is unrankable
 
 scanner:
+  select_top_n: 10        # rank the watchlist and trade only the top-N stocks each cycle
   top_n: 30               # candidates handed to the strategy engine each cycle
   shadow_enabled: true    # A0: persist full point-in-time rankings every cycle
   w_pct_change: 1.0
   w_range_pos: 2.0
   w_gap: 0.5
+
+# Regime router (used when strategy.router_enabled: true). Reads strategies/*.yaml.
+router:
+  ceiling: 1.0            # max total weight the day permits (premarket can lower)
+  min_fit_pf: 1.0         # a strategy is an "edge" only above this PF
+  min_trades: 30          # small-sample floor for regime_fit
+  max_weight_change: 0.2  # per-cycle weight hysteresis
+regime:                   # regime classifier thresholds (sweep candidates)
+  adx_trend: 25.0
+  adx_range: 20.0
+  atr_pct_high: 1.0
+  atr_pct_low: 0.3
+  min_dwell_bars: 3       # anti-whipsaw: a new regime must persist this many bars
+  min_bars: 60
+market_state:             # MarketState indicator windows
+  ms_ema_slow: 50
+  ms_adx_period: 14
+  ms_bb_period: 20
 
 events:
   path: "config/events.yaml"   # market-wide + per-stock event days to skip

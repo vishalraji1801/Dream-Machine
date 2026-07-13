@@ -9,12 +9,19 @@ def test_strategies_dir_loads_all():
 
 
 def test_unvalidated_blocked_live_but_usable_in_backtest():
-    m = load_strategy_dir("strategies")["supertrend"]
-    # governing rule: unvalidated sets never run live/paper...
+    # donchian is still validated:false — the governing rule blocks it in live/paper
+    m = load_strategy_dir("strategies")["donchian_trend_tsl"]
     assert param_set_for(m, Regime.STRONG_TREND_UP, "live") is None
     assert param_set_for(m, Regime.STRONG_TREND_UP, "paper") is None
-    # ...but are available in research/backtest
+    # ...but is available in research/backtest
     assert param_set_for(m, Regime.STRONG_TREND_UP, "backtest") is not None
+
+
+def test_supertrend_validated_for_paper():
+    # supertrend was seeded + validated from the TCS walk-forward -> usable in paper
+    m = load_strategy_dir("strategies")["supertrend"]
+    assert param_set_for(m, Regime.STRONG_TREND_UP, "paper") is not None
+    assert param_set_for(m, Regime.RANGE, "paper") is None       # disabled in range
 
 
 def test_regime_enablement_matches_design():
