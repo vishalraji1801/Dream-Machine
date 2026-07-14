@@ -50,22 +50,21 @@ class RegimeState:
 
 
 def _raw_regime(s: MarketState, cfg: RegimeConfig) -> Regime:
-    """Instantaneous label from the state, before hysteresis."""
-    trending = s.adx >= cfg.adx_trend
-    non_trending = s.adx < cfg.adx_range
-    if trending:
+    """Instantaneous label from the state, before hysteresis. Every sufficiently-
+    warmed state maps to a concrete regime — RANGE is the non-trending default, so
+    there is no UNKNOWN 'dead zone' between the ADX thresholds. (UNKNOWN is reserved
+    for insufficient data, handled in classify.)"""
+    if s.adx >= cfg.adx_trend:
         if s.close > s.ema_slow and s.ema_slope > cfg.ema_slope_min:
             return Regime.STRONG_TREND_UP
         if s.close < s.ema_slow and s.ema_slope < -cfg.ema_slope_min:
             return Regime.STRONG_TREND_DOWN
-        # strong ADX but ambiguous side -> treat as range-ish
-    if s.atr_pct >= cfg.atr_pct_high and non_trending:
+        # strong ADX but no clear side -> fall through to vol/range below
+    if s.atr_pct >= cfg.atr_pct_high:
         return Regime.HIGH_VOL_CHOP
     if s.atr_pct <= cfg.atr_pct_low and s.bb_width_pctile <= cfg.bb_width_low_pctile:
         return Regime.QUIET
-    if non_trending:
-        return Regime.RANGE
-    return Regime.UNKNOWN
+    return Regime.RANGE
 
 
 def _confidence(regime: Regime, s: MarketState, cfg: RegimeConfig) -> float:

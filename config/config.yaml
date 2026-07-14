@@ -210,8 +210,8 @@ router:
   min_trades: 30          # small-sample floor for regime_fit
   max_weight_change: 0.2  # per-cycle weight hysteresis
 regime:                   # regime classifier thresholds (sweep candidates)
-  adx_trend: 25.0
-  adx_range: 20.0
+  adx_trend: 20.0         # ADX >= this + clear side = trend (lowered so mild trends engage)
+  adx_range: 18.0
   atr_pct_high: 1.0
   atr_pct_low: 0.3
   min_dwell_bars: 3       # anti-whipsaw: a new regime must persist this many bars
