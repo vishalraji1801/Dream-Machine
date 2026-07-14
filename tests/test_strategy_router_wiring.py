@@ -9,8 +9,8 @@ def test_strategies_dir_loads_all():
 
 
 def test_unvalidated_blocked_live_but_usable_in_backtest():
-    # donchian is still validated:false — the governing rule blocks it in live/paper
-    m = load_strategy_dir("strategies")["donchian_trend_tsl"]
+    # orb_nifty is still validated:false (no edge) — governing rule blocks it live/paper
+    m = load_strategy_dir("strategies")["orb_nifty"]
     assert param_set_for(m, Regime.STRONG_TREND_UP, "live") is None
     assert param_set_for(m, Regime.STRONG_TREND_UP, "paper") is None
     # ...but is available in research/backtest

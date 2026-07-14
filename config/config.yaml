@@ -224,6 +224,20 @@ market_state:             # MarketState indicator windows
   ms_adx_period: 14
   ms_bb_period: 20
 
+# Swing/positional sleeve (daily donchian + bb). Runs ONCE a day near the close,
+# holds CNC positions overnight. Separate capital book from the intraday bot.
+swing:
+  enabled: true
+  window_start: "15:00"   # evaluate 15-30 min before the 15:30 close
+  window_end: "15:14"     # kept before the 15:15 square-off boundary
+  capital: 500000         # delivery capital for the swing sleeve (paper)
+  risk_pct: 1.0           # % of swing capital risked per position
+  max_positions: 5
+  max_position_pct: 20.0  # max % of swing capital in one name
+  atr_stop_mult: 6.0      # donchian trailing-stop ATR multiple
+  lookback_days: 320      # daily bars fetched (>= 200 for the breakout window)
+  product: CNC            # delivery (overnight); intraday sleeve uses MIS
+
 events:
   path: "config/events.yaml"   # market-wide + per-stock event days to skip
 
