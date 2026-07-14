@@ -177,6 +177,17 @@ def startup() -> dict:
         logger.warning(f"Regime router ENABLED ({ctx['source']}) — routing among {names}")
         alert.send_raw(f"Regime router ENABLED ({ctx['source']}) — {len(names)} strategies loaded")
 
+    if cfg.get("swing", {}).get("enabled"):
+        from src.swing_engine import SwingEngine
+        ctx["swing"] = SwingEngine(
+            cfg, mode=ctx["source"], db=ctx["db"],
+            fetch_daily=lambda s, d: _fetch_daily(ctx, s, d),
+            index_symbol=cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
+        sw = ctx["swing"]
+        logger.warning(f"Swing sleeve ENABLED ({ctx['source']}) — {len(sw.positions)} open, "
+                       f"strategies {[m.name for m in sw.metas]}")
+        alert.send_raw(f"Swing sleeve ENABLED ({ctx['source']}) — {len(sw.positions)} open positions")
+
     _write_daily_universe(ctx)
     logger.info("All modules initialised — bot ready")
     return ctx
@@ -579,6 +590,43 @@ def _shadow_scan(ctx: dict) -> None:
         logger.warning(f"Shadow scan failed (non-fatal): {exc}")
 
 
+def _fetch_daily(ctx: dict, symbol: str, lookback_days: int):
+    """DAILY candles for the swing sleeve (cached once per day per symbol)."""
+    import pandas as pd
+    from datetime import timedelta
+    cache = ctx.setdefault("_daily_cache", {})
+    today = datetime.now().date()
+    if cache.get("_date") != today:
+        cache.clear()
+        cache["_date"] = today
+    if symbol in cache:
+        return cache[symbol]
+    fetcher = ctx["fetcher"]
+    token = fetcher._instruments.get(symbol)
+    if not token:
+        return None
+    to = datetime.now()
+    frm = to - timedelta(days=int(lookback_days * 1.6) + 10)
+    try:
+        data = fetcher._kite.historical_data(token, frm, to, "day")
+    except Exception as exc:
+        logger.warning(f"swing daily fetch failed for {symbol}: {exc}")
+        return None
+    if not data:
+        return None
+    df = pd.DataFrame(data).rename(columns={"date": "timestamp"})
+    df = df[["timestamp", "open", "high", "low", "close", "volume"]]
+    cache[symbol] = df
+    return df
+
+
+def _in_swing_window(cfg: dict) -> bool:
+    from datetime import time as dtime
+    s = cfg.get("swing", {})
+    parse = lambda x: dtime(*map(int, x.split(":")))
+    return parse(s.get("window_start", "15:00")) <= datetime.now().time() <= parse(s.get("window_end", "15:14"))
+
+
 def _get_candles(ctx: dict, symbol: str):
     """Candles for signal generation: tick-built once warm (zero REST calls),
     REST fallback while warming up or if the feed is disabled (SCRUM-106)."""
@@ -954,6 +1002,7 @@ def run() -> int:
     exit_code = 0
     hb = {"last": time.monotonic()}
     eod_done = None  # date of the last completed EOD — square off/summary once per day
+    swing_done = None  # date the swing sleeve last ran (once per day near the close)
     try:
         while not shutdown["requested"] and not stop_event.is_set():
             _process_commands()
@@ -975,6 +1024,21 @@ def run() -> int:
                 time.sleep(30)
                 continue
             trading_cycle(ctx, allow_entries=not pause_event.is_set())
+
+            # Swing/positional sleeve — once a day near the close (holds overnight)
+            swing = ctx.get("swing")
+            if (swing is not None and not pause_event.is_set()
+                    and swing_done != datetime.now().date() and _in_swing_window(cfg)):
+                try:
+                    result = swing.run_daily()
+                    ctx["alert"].send_raw(
+                        f"Swing sleeve ({ctx['source']}): regime {result['regime']}, "
+                        f"{result['entered']} entered, {result['exited']} exited, "
+                        f"{result['open']} open.")
+                except Exception as exc:
+                    logger.error(f"Swing run failed: {exc}", exc_info=True)
+                swing_done = datetime.now().date()
+
             _save_state(ctx)
             time.sleep(interval)
     except KeyboardInterrupt:

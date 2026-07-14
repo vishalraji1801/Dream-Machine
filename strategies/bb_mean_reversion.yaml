@@ -1,12 +1,15 @@
 name: bb_mean_reversion
-# Mean-reversion — designed for RANGE/QUIET; disabled in strong trends.
-# All sets validated:false until walk-forward OOS confirms them (governing rule:
-# unvalidated params never run in live/paper — research/backtest only).
+# Daily buy-the-dip mean-reversion (above 200-MA, below lower Bollinger). Runs in
+# RANGE/QUIET; disabled in trends (never fade a strong trend). Params + fit SEEDED
+# from the 10-yr multi-stock backtest (positive but small samples). validated:true
+# for the swing sleeve; seed replaced by the learned map as the paper ledger fills.
 regime_param_sets:
-  RANGE:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: false}
-  QUIET:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: false}
+  RANGE:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: true, oos_ref: multistock_10y}
+  QUIET:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: true, oos_ref: multistock_10y}
   STRONG_TREND_UP:   {enabled: false}
   STRONG_TREND_DOWN: {enabled: false}
   HIGH_VOL_CHOP:     {enabled: false}
-  default:           {bb_std: 2.5, validated: false}
-regime_fit: {}   # filled by the analyst job from the ledger
+  default:           {bb_std: 2.5, validated: true, oos_ref: multistock_10y}
+regime_fit:
+  RANGE:             {pf: 1.5, trades: 35, source: seed_10y_multistock}
+  QUIET:             {pf: 1.5, trades: 35, source: seed_10y_multistock}

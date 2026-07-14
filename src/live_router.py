@@ -21,6 +21,7 @@ from src.regime import RegimeConfig, RegimeState, classify
 from src.router import (PremarketAllocation, RouterConfig, route, routing_records)
 from src.strategy import generate_signal
 from src.strategy_meta import load_strategy_dir
+from src.swing_engine import SWING_STRATEGIES   # daily strategies belong to the swing sleeve
 
 logger = get_logger("live_router")
 
@@ -31,7 +32,9 @@ class LiveRouter:
         self.cfg = cfg
         self.mode = mode
         self.db = db
-        self.metas = list(load_strategy_dir(strategies_dir).values())
+        # INTRADAY strategies only — daily/swing strategies run in the swing sleeve
+        self.metas = [m for n, m in load_strategy_dir(strategies_dir).items()
+                      if n not in SWING_STRATEGIES]
         self.regime_cfg = RegimeConfig(**{k: v for k, v in cfg.get("regime", {}).items()
                                           if k in RegimeConfig.__dataclass_fields__})
         self.ms_cfg = cfg.get("market_state", {})

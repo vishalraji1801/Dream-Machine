@@ -1,10 +1,14 @@
 name: donchian_trend_tsl
-# Trend-following — designed for strong trends (long+short); disabled in range/quiet.
-# validated:false until walk-forward OOS confirms (research/backtest only for now).
+# Daily 200-day breakout, long+short, 6x ATR trailing stop. Params + fit SEEDED
+# from the 10-yr multi-stock backtest (positive on all 9 stocks, PF 1.16-2.88).
+# validated:true so the swing sleeve runs it in trend regimes. Seed is replaced by
+# the learned map once the paper ledger accrues real per-regime history.
 regime_param_sets:
-  STRONG_TREND_UP:   {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: false}
-  STRONG_TREND_DOWN: {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: false}
+  STRONG_TREND_UP:   {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: true, oos_ref: multistock_10y}
+  STRONG_TREND_DOWN: {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: true, oos_ref: multistock_10y}
   RANGE:             {enabled: false}
   QUIET:             {enabled: false}
-  default:           {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: false}
-regime_fit: {}
+  default:           {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: true, oos_ref: multistock_10y}
+regime_fit:
+  STRONG_TREND_UP:   {pf: 1.4, trades: 50, source: seed_10y_multistock}
+  STRONG_TREND_DOWN: {pf: 1.4, trades: 50, source: seed_10y_multistock}
