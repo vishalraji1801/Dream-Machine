@@ -12,6 +12,7 @@ Only INTRADAY strategies fire on 5-min bars; daily strategies (bb/donchian) are
 positional and simply return HOLD here — that's expected. The router trades
 nothing when no strategy has a positive learned fit in the current regime.
 """
+from datetime import datetime
 from typing import Optional
 
 from src.logger import get_logger
@@ -40,14 +41,28 @@ class LiveRouter:
             min_trades=r.get("min_trades", 30),
             max_weight_change=r.get("max_weight_change", 0.2))
         self.premarket = PremarketAllocation(ceiling=r.get("ceiling", 1.0))
+        # how often to re-check the regime (minutes). 0 = every cycle.
+        self.regime_interval = r.get("regime_interval_minutes", 0) * 60
+        self._last_regime_time: Optional[datetime] = None
         self._prev_regime: Optional[RegimeState] = None
         self._prev_weights: dict = {}
         self._active: list = []
         self.regime: Optional[RegimeState] = None
 
-    def step(self, index_df) -> list:
-        """Advance one cycle: classify regime, route, persist. Returns the active
-        strategies (possibly empty = trade nothing)."""
+    def _due_for_regime(self, now: datetime) -> bool:
+        if self.regime is None or self.regime_interval <= 0 or self._last_regime_time is None:
+            return True
+        return (now - self._last_regime_time).total_seconds() >= self.regime_interval
+
+    def step(self, index_df, now: Optional[datetime] = None) -> list:
+        """Advance one cycle. The regime is only re-checked every
+        `regime_interval_minutes` (default: every cycle); between checks the last
+        regime + active strategies are reused, so entries are still scanned each
+        cycle. Returns the active strategies (possibly empty = trade nothing)."""
+        now = now or datetime.now()
+        if not self._due_for_regime(now):
+            return self._active                       # reuse cached regime this cycle
+
         if index_df is None or len(index_df) == 0:
             logger.warning("router: no index data — trading nothing this cycle")
             self._active = []
@@ -55,6 +70,7 @@ class LiveRouter:
         state = compute_market_state(index_df, self.ms_cfg)
         self._prev_regime = classify(state, self._prev_regime, self.regime_cfg)
         self.regime = self._prev_regime
+        self._last_regime_time = now
 
         active = route(self.regime, self.metas, self.premarket, self.router_cfg,
                        self._prev_weights)

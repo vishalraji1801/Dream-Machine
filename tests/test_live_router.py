@@ -69,6 +69,23 @@ def test_no_index_data_trades_nothing():
     assert lr.step(_index([])) == []
 
 
+def test_regime_checked_only_once_per_interval():
+    from datetime import datetime, timedelta
+    cfg = _cfg()
+    cfg["router"]["regime_interval_minutes"] = 60
+    lr = LiveRouter(cfg, mode="paper")
+    t0 = datetime(2026, 7, 14, 10, 0, 0)
+    r1 = lr.step(_uptrend(), now=t0)
+    stamp1 = lr._last_regime_time
+    # 5 min later: within the hour -> NOT re-checked (timestamp unchanged)
+    lr.step(_rangebound(), now=t0 + timedelta(minutes=5))
+    assert lr._last_regime_time == stamp1
+    assert lr.regime.regime is Regime.STRONG_TREND_UP        # still the 10:00 regime
+    # 60 min later: re-checked (timestamp advances)
+    lr.step(_rangebound(), now=t0 + timedelta(minutes=60))
+    assert lr._last_regime_time == t0 + timedelta(minutes=60)
+
+
 def test_daily_strategies_not_active_intraday():
     # bb/donchian are validated:false -> never active in paper via the router
     lr = LiveRouter(_cfg(), mode="paper")

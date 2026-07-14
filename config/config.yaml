@@ -209,6 +209,9 @@ router:
   min_fit_pf: 1.0         # a strategy is an "edge" only above this PF
   min_trades: 30          # small-sample floor for regime_fit
   max_weight_change: 0.2  # per-cycle weight hysteresis
+  regime_interval_minutes: 60   # re-check the regime once an hour (0 = every cycle);
+                                # between checks the last regime is reused, entries
+                                # are still scanned every 5-min cycle
 regime:                   # regime classifier thresholds (sweep candidates)
   adx_trend: 20.0         # ADX >= this + clear side = trend (lowered so mild trends engage)
   adx_range: 18.0
