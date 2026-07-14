@@ -1,0 +1,271 @@
+import threading
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.telegram_controller import TelegramController
+
+
+@pytest.fixture
+def stop_event():
+    return threading.Event()
+
+
+@pytest.fixture
+def status_fn():
+    return MagicMock(return_value="Bot running. 2 positions open.")
+
+
+@pytest.fixture
+def ctrl(stop_event, status_fn):
+    return TelegramController(
+        bot_token="dummy_token",
+        chat_id="123456",
+        stop_event=stop_event,
+        status_fn=status_fn,
+    )
+
+
+def _updates(*texts, chat_id="123456", start_id=1):
+    return {
+        "result": [
+            {
+                "update_id": start_id + i,
+                "message": {
+                    "chat": {"id": int(chat_id)},
+                    "text": t,
+                },
+            }
+            for i, t in enumerate(texts)
+        ]
+    }
+
+
+# ── poll_once ─────────────────────────────────────────────────────────────────
+
+def test_stop_command_sets_stop_event(ctrl, stop_event):
+    response = MagicMock()
+    response.json.return_value = _updates("/stop")
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post"):
+        ctrl._poll_once()
+    assert stop_event.is_set()
+
+
+def test_status_command_calls_status_fn(ctrl, stop_event, status_fn):
+    response = MagicMock()
+    response.json.return_value = _updates("/status")
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post") as mock_post:
+        ctrl._poll_once()
+    status_fn.assert_called_once()
+    sent_text = mock_post.call_args.kwargs["json"]["text"]
+    assert "Bot running" in sent_text
+
+
+def test_unknown_command_sends_help_reply(ctrl):
+    response = MagicMock()
+    response.json.return_value = _updates("/foo")
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post") as mock_post:
+        ctrl._poll_once()
+    sent_text = mock_post.call_args.kwargs["json"]["text"]
+    assert "/stop" in sent_text
+
+
+def test_ignores_message_from_wrong_chat_id(ctrl, stop_event):
+    response = MagicMock()
+    response.json.return_value = _updates("/stop", chat_id="999999")
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post"):
+        ctrl._poll_once()
+    assert not stop_event.is_set()
+
+
+def test_offset_advances_after_each_update(ctrl):
+    response = MagicMock()
+    response.json.return_value = _updates("/status", "/status", start_id=10)
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post"):
+        ctrl._poll_once()
+    assert ctrl._offset == 12  # last update_id (11) + 1
+
+
+def test_empty_updates_does_not_change_offset(ctrl):
+    response = MagicMock()
+    response.json.return_value = {"result": []}
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response):
+        ctrl._poll_once()
+    assert ctrl._offset == 0
+
+
+def test_poll_once_raises_on_http_error(ctrl):
+    import requests as req
+    response = MagicMock()
+    response.raise_for_status.side_effect = req.exceptions.HTTPError("500")
+    with patch("src.telegram_controller.requests.get", return_value=response):
+        with pytest.raises(req.exceptions.HTTPError):
+            ctrl._poll_once()
+
+
+# ── start / stop thread ───────────────────────────────────────────────────────
+
+def test_start_launches_daemon_thread(ctrl):
+    response = MagicMock()
+    response.json.return_value = {"result": []}
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.time.sleep"):
+        ctrl.start()
+        assert ctrl._thread is not None
+        assert ctrl._thread.is_alive()
+        ctrl._stop_event.set()
+        ctrl.stop()
+
+
+def test_stop_event_exits_poll_loop(stop_event):
+    ctrl = TelegramController("tok", "123", stop_event)
+    stop_event.set()
+    response = MagicMock()
+    response.json.return_value = {"result": []}
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response):
+        ctrl._poll_loop()  # should return immediately without polling
+
+
+def test_poll_error_does_not_crash_loop(ctrl, stop_event):
+    call_count = {"n": 0}
+
+    def flaky_get(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise Exception("network blip")
+        stop_event.set()
+        m = MagicMock()
+        m.json.return_value = {"result": []}
+        m.raise_for_status = MagicMock()
+        return m
+
+    with patch("src.telegram_controller.requests.get", side_effect=flaky_get), \
+         patch("src.telegram_controller.time.sleep"):
+        ctrl._poll_loop()
+
+    assert call_count["n"] == 2
+
+
+# ── status_fn not provided ────────────────────────────────────────────────────
+
+def test_status_fn_none_sends_unavailable(stop_event):
+    ctrl = TelegramController("tok", "123456", stop_event, status_fn=None)
+    response = MagicMock()
+    response.json.return_value = _updates("/status")
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post") as mock_post:
+        ctrl._poll_once()
+    assert "unavailable" in mock_post.call_args.kwargs["json"]["text"].lower()
+
+
+# ── /pause and /resume (SCRUM-70) ─────────────────────────────────────────────
+
+def _ctrl_with_pause(stop_event):
+    pause_event = threading.Event()
+    ctrl = TelegramController("tok", "123456", stop_event, pause_event=pause_event)
+    return ctrl, pause_event
+
+
+def _respond_with(ctrl, text):
+    response = MagicMock()
+    response.json.return_value = _updates(text)
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post") as mock_post:
+        ctrl._poll_once()
+    return mock_post
+
+
+def test_pause_command_sets_pause_event(stop_event):
+    ctrl, pause_event = _ctrl_with_pause(stop_event)
+    _respond_with(ctrl, "/pause")
+    assert pause_event.is_set()
+    assert not stop_event.is_set()  # pause is not stop
+
+
+def test_resume_command_clears_pause_event(stop_event):
+    ctrl, pause_event = _ctrl_with_pause(stop_event)
+    pause_event.set()
+    _respond_with(ctrl, "/resume")
+    assert not pause_event.is_set()
+
+
+def test_pause_reply_mentions_resume(stop_event):
+    ctrl, _ = _ctrl_with_pause(stop_event)
+    mock_post = _respond_with(ctrl, "/pause")
+    assert "/resume" in mock_post.call_args.kwargs["json"]["text"]
+
+
+def test_pause_without_pause_event_replies_gracefully(ctrl):
+    mock_post = _respond_with(ctrl, "/pause")
+    assert "not supported" in mock_post.call_args.kwargs["json"]["text"].lower()
+
+
+def test_help_lists_pause_and_resume(stop_event):
+    ctrl, _ = _ctrl_with_pause(stop_event)
+    mock_post = _respond_with(ctrl, "/nonsense")
+    text = mock_post.call_args.kwargs["json"]["text"]
+    assert "/pause" in text and "/resume" in text
+
+
+# ── reply failure does not raise ──────────────────────────────────────────────
+
+def test_reply_failure_does_not_crash(ctrl):
+    import requests as req
+    response = MagicMock()
+    response.json.return_value = _updates("/status")
+    response.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=response), \
+         patch("src.telegram_controller.requests.post",
+               side_effect=req.exceptions.ConnectionError("timeout")):
+        ctrl._poll_once()  # should not raise
+
+
+# ── startup backlog flush (day-2 paper bug: yesterday's /stop replayed) ───────
+
+def test_start_flushes_stale_stop_command(stop_event):
+    """A /stop sent while the bot was offline must NOT shut down a new session."""
+    ctrl = TelegramController("tok", "123456", stop_event)
+    stale = MagicMock()
+    stale.json.return_value = _updates("/stop", start_id=42)
+    stale.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=stale) as mg, \
+         patch("src.telegram_controller.time.sleep"):
+        ctrl._flush_backlog()
+    assert ctrl._offset == 43                 # skipped past the stale update
+    assert not stop_event.is_set()            # and did NOT act on it
+    # second call acknowledges server-side with the advanced offset
+    acked = [c for c in mg.call_args_list if c.kwargs["params"].get("offset") == 43]
+    assert acked
+
+
+def test_flush_with_empty_backlog_keeps_offset(stop_event):
+    ctrl = TelegramController("tok", "123456", stop_event)
+    empty = MagicMock()
+    empty.json.return_value = {"result": []}
+    empty.raise_for_status = MagicMock()
+    with patch("src.telegram_controller.requests.get", return_value=empty):
+        ctrl._flush_backlog()
+    assert ctrl._offset == 0
+
+
+def test_flush_failure_does_not_block_start(stop_event):
+    import requests as req
+    ctrl = TelegramController("tok", "123456", stop_event)
+    with patch("src.telegram_controller.requests.get",
+               side_effect=req.exceptions.ConnectionError("down")):
+        ctrl._flush_backlog()               # must not raise

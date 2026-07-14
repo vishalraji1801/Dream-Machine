@@ -14,7 +14,9 @@ class RiskManager:
     def __init__(self, cfg: dict):
         self._r = cfg["risk"]
         self._t = cfg["trading"]
+        self._sectors = cfg.get("sectors", {})  # {symbol: sector} for the sector cap
         self._daily_pnl: float = 0.0
+        self._peak_pnl: float = 0.0
         self._trades_today: int = 0
         self._consecutive_api_errors: int = 0
         self._halted: bool = False
@@ -28,9 +30,16 @@ class RiskManager:
         self._halted = False
         logger.info("Daily risk counters reset")
 
+    def restore_counters(self, daily_pnl: float, trades_today: int) -> None:
+        """Restore same-day counters from a saved state file (crash recovery)."""
+        self._daily_pnl = daily_pnl
+        self._trades_today = trades_today
+        logger.warning(f"Risk counters restored: P&L Rs.{daily_pnl:.2f}, {trades_today} trades")
+
     def record_pnl(self, pnl: float) -> None:
         self._daily_pnl += pnl
-        logger.info(f"Daily P&L updated: Rs.{self._daily_pnl:.2f}")
+        self._peak_pnl = max(self._peak_pnl, self._daily_pnl)
+        logger.info(f"Daily P&L updated: Rs.{self._daily_pnl:.2f} (peak Rs.{self._peak_pnl:.2f})")
 
     def record_trade(self) -> None:
         self._trades_today += 1
@@ -63,6 +72,28 @@ class RiskManager:
         if self._consecutive_api_errors >= self._r["max_consecutive_api_errors"]:
             return self._halt(f"Consecutive API errors: {self._consecutive_api_errors}")
 
+        giveback_limit = self._r.get("max_giveback_from_peak", 0)
+        if giveback_limit and self._peak_pnl > 0:
+            giveback = self._peak_pnl - self._daily_pnl
+            if giveback >= giveback_limit:
+                return self._halt(
+                    f"Drawdown-from-peak kill switch: gave back Rs.{giveback:.2f} "
+                    f"from peak Rs.{self._peak_pnl:.2f}")
+
+        return True, ""
+
+    def check_sector_cap(self, symbol: str, open_symbols: list) -> tuple[bool, str]:
+        """Block a new entry if its sector already holds max_positions_per_sector (SCRUM-82).
+        Prevents 'one trade wearing three hats' (e.g. three private banks at once)."""
+        cap = self._r.get("max_positions_per_sector")
+        if not cap or not self._sectors:
+            return True, ""
+        sector = self._sectors.get(symbol)
+        if sector is None:
+            return True, ""
+        held = sum(1 for s in open_symbols if self._sectors.get(s) == sector)
+        if held >= cap:
+            return False, f"sector cap for {sector} reached ({held})"
         return True, ""
 
     def _halt(self, reason: str) -> tuple[bool, str]:
@@ -113,8 +144,11 @@ class RiskManager:
             return 0
         max_risk = self._r["total_capital"] * self._r["max_risk_per_trade_pct"] / 100
         qty = int(max_risk / risk_per_share)
-        max_pos = self._r["total_capital"] * self._r["max_position_size_pct"] / 100
-        if qty * entry_price > max_pos:
-            qty = int(max_pos / entry_price)
+        # clamp to the tighter of max-position-value and per-order value cap —
+        # SHRINK to fit, never skip (a pricey stock must still be tradeable).
+        value_cap = min(self._r["total_capital"] * self._r["max_position_size_pct"] / 100,
+                        self._r["order_value_cap"])
+        if entry_price > 0 and qty * entry_price > value_cap:
+            qty = int(value_cap / entry_price)
         logger.info(f"Qty={qty} | entry={entry_price} sl={stop_loss} max_risk=Rs.{max_risk:.0f}")
-        return qty
+        return max(qty, 0)

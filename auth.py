@@ -1,51 +1,219 @@
 """
-Daily Kite login script.
-Run once each morning before market open to generate and save the access token.
-Usage: python auth.py
+Daily Kite login script — automated headless authentication.
+Reads ZERODHA_USER_ID from config/.env; password comes from Windows
+Credential Manager (keyring) with .env ZERODHA_PASSWORD as fallback.
+Prompts for TOTP only, then saves the access token.
+
+Usage:
+    python auth.py                 # daily login (run via start_bot.bat)
+    python auth.py --set-password  # store password securely, one time
 """
 import os
 import sys
-import webbrowser
+from typing import Optional
+from urllib.parse import parse_qs, urlparse
 
+import requests as req
 from dotenv import load_dotenv
 from kiteconnect import KiteConnect
 
 load_dotenv(dotenv_path=os.path.join("config", ".env"))
 
+_KEYRING_SERVICE = "trading-bot"
 
-def run_auth() -> None:
-    api_key = os.getenv("KITE_API_KEY")
+
+def _get_password(user_id: str) -> Optional[str]:
+    """Windows Credential Manager first, .env fallback."""
+    try:
+        import keyring
+        pw = keyring.get_password(_KEYRING_SERVICE, user_id)
+        if pw:
+            return pw
+    except Exception:
+        pass
+    return os.getenv("ZERODHA_PASSWORD")
+
+
+def set_password() -> None:
+    """Store the Zerodha password in Windows Credential Manager."""
+    import getpass
+    import keyring
+
+    user_id = os.getenv("ZERODHA_USER_ID")
+    if not user_id:
+        print("ERROR: ZERODHA_USER_ID missing from config/.env")
+        sys.exit(1)
+    pw = getpass.getpass(f"Zerodha password for {user_id}: ")
+    if not pw:
+        print("ERROR: empty password.")
+        sys.exit(1)
+    keyring.set_password(_KEYRING_SERVICE, user_id, pw)
+    print("Password stored in Windows Credential Manager.")
+    print("You can now remove ZERODHA_PASSWORD from config/.env.")
+
+
+def _market_closed_today() -> bool:
+    """Weekend check — no trading on Saturday/Sunday."""
+    from datetime import datetime
+    return datetime.now().date().weekday() >= 5
+
+
+class AuthError(Exception):
+    """Kite login failed — carries a user-facing message (safe to surface)."""
+
+
+def authenticate_with_totp(totp: str) -> dict:
+    """
+    Run the headless Kite login with a caller-supplied TOTP (no prompts, no
+    sys.exit). Server-side credentials (API key/secret, user id, password) are
+    read from the environment / credential store; only the TOTP comes from the
+    caller. Saves the access token to KITE_ACCESS_TOKEN_PATH and returns
+    {access_token, user_id, token_path}. Raises AuthError on any failure.
+
+    This is the shared core behind both the `bot auth` CLI and the web app login.
+    """
+    totp = (totp or "").strip()
+    if not totp:
+        raise AuthError("TOTP is required.")
+
+    api_key    = os.getenv("KITE_API_KEY")
     api_secret = os.getenv("KITE_API_SECRET")
+    user_id    = os.getenv("ZERODHA_USER_ID")
     token_path = os.getenv("KITE_ACCESS_TOKEN_PATH", "./token.txt")
 
-    if not api_key or not api_secret:
-        print("ERROR: KITE_API_KEY or KITE_API_SECRET missing from config/.env")
-        sys.exit(1)
+    missing = [k for k, v in {
+        "KITE_API_KEY": api_key, "KITE_API_SECRET": api_secret,
+        "ZERODHA_USER_ID": user_id,
+    }.items() if not v]
+    if missing:
+        raise AuthError(f"Missing from config/.env: {', '.join(missing)}")
 
-    kite = KiteConnect(api_key=api_key)
-    login_url = kite.login_url()
+    password = _get_password(user_id)
+    if not password:
+        raise AuthError("No password found. Run 'python auth.py --set-password' "
+                        "or set ZERODHA_PASSWORD in config/.env")
 
-    print(f"\nOpening Kite login in your browser...")
-    print(f"URL: {login_url}\n")
-    webbrowser.open(login_url)
-
-    print("After logging in, copy the 'request_token' from the redirect URL.")
-    print("It looks like: http://127.0.0.1?request_token=XXXX&action=login&status=success\n")
-    request_token = input("Paste request_token here: ").strip()
-
-    if not request_token:
-        print("ERROR: No request_token provided.")
-        sys.exit(1)
-
-    session = kite.generate_session(request_token, api_secret=api_secret)
-    access_token = session["access_token"]
+    try:
+        request_token = _headless_login(api_key, user_id, password, totp)
+        kite = KiteConnect(api_key=api_key)
+        session_data = kite.generate_session(request_token, api_secret=api_secret)
+        access_token = session_data["access_token"]
+    except AuthError:
+        raise
+    except Exception as exc:
+        raise AuthError(str(exc))
 
     with open(token_path, "w") as f:
         f.write(access_token)
+    return {"access_token": access_token, "user_id": user_id, "token_path": token_path}
 
-    print(f"\nToken saved to {token_path}")
-    print("Bot is ready to start. Run: python main.py")
+
+def run_auth() -> str:
+    """
+    CLI entry: prompt for TOTP, authenticate, save the token. Exits on failure.
+    """
+    if _market_closed_today() and "--force" not in sys.argv:
+        print("Market is closed today (weekend) — not starting.")
+        print("Use 'python auth.py --force' to authenticate anyway.")
+        sys.exit(1)
+
+    totp = input("Enter TOTP: ").strip()
+    print("Authenticating with Kite...")
+    try:
+        result = authenticate_with_totp(totp)
+    except AuthError as exc:
+        print(f"ERROR: Authentication failed — {exc}")
+        sys.exit(1)
+
+    print(f"Authentication successful. Token saved to {result['token_path']}")
+    return result["access_token"]
+
+
+def _headless_login(api_key: str, user_id: str, password: str, totp: str) -> str:
+    """Automate Kite Connect OAuth via requests. Returns request_token."""
+    s = req.Session()
+    s.headers.update({"User-Agent": "Mozilla/5.0"})
+
+    # Step 1: Password login
+    r = s.post(
+        "https://kite.zerodha.com/api/login",
+        data={"user_id": user_id, "password": password},
+        timeout=15,
+    )
+    body = _json_or_raise(r, "login")
+    if body.get("status") != "success":
+        raise RuntimeError(f"Login failed: {body.get('message', body)}")
+    request_id = body["data"]["request_id"]
+
+    # Step 2: TOTP 2FA
+    r = s.post(
+        "https://kite.zerodha.com/api/twofa",
+        data={
+            "user_id": user_id,
+            "request_id": request_id,
+            "twofa_value": totp,
+            "twofa_type": "totp",
+        },
+        timeout=15,
+    )
+    body = _json_or_raise(r, "2FA")
+    if body.get("status") != "success":
+        raise RuntimeError(
+            f"2FA rejected by Kite: {body.get('message', body)}\n"
+            "Most common cause: the TOTP expired (codes last ~30s). Retry with a "
+            "FRESH code — wait for the next one, then type it immediately."
+        )
+
+    # Step 3: OAuth redirect — capture request_token from callback URL
+    connect_url = f"https://kite.zerodha.com/connect/login?v=3&api_key={api_key}"
+    final_url = _capture_callback_url(s, connect_url)
+
+    params = parse_qs(urlparse(final_url).query)
+    token = params.get("request_token", [None])[0]
+    if not token:
+        raise RuntimeError(
+            f"request_token not found in redirect URL: {final_url}\n"
+            "Check that your Kite Connect app redirect URL is set in the developer console."
+        )
+    return token
+
+
+def _json_or_raise(r, step: str) -> dict:
+    """Surface Kite's real error message even on 4xx (raise_for_status hides it)."""
+    try:
+        return r.json()
+    except ValueError:
+        r.raise_for_status()
+        raise RuntimeError(f"{step}: unexpected non-JSON response (HTTP {r.status_code})")
+
+
+def _capture_callback_url(session: req.Session, url: str) -> str:
+    """
+    Follow the Kite Connect OAuth redirect chain and return the callback URL
+    that contains request_token. Handles both reachable and localhost callback URLs.
+    """
+    try:
+        r = session.get(url, allow_redirects=True, timeout=15)
+        if "request_token" in r.url:
+            return r.url
+        for resp in r.history:
+            loc = resp.headers.get("Location", "")
+            if "request_token" in loc:
+                return loc
+    except req.exceptions.ConnectionError as exc:
+        # Redirect pointed to an unreachable host (e.g. http://127.0.0.1)
+        # The failing request URL is the callback URL we need
+        if exc.request and "request_token" in str(exc.request.url):
+            return str(exc.request.url)
+        # Fall through to raise below
+    raise RuntimeError(
+        "Could not capture the OAuth callback URL. "
+        "Verify your Kite Connect app redirect URL is configured correctly."
+    )
 
 
 if __name__ == "__main__":
-    run_auth()
+    if "--set-password" in sys.argv:
+        set_password()
+    else:
+        run_auth()

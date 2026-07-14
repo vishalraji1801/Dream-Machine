@@ -1,0 +1,12 @@
+# Event calendar — maintained weekly by the scheduled Claude agent (and by hand).
+# Entries are BLOCKED on these dates. Empty by default (no blocking).
+#
+# market_event_days: bot takes NO entries all day (RBI policy, budget, F&O expiry).
+# earnings: bot skips that specific symbol on its event date.
+
+market_event_days: []
+  # - "2026-07-31"   # example: monthly F&O expiry
+
+earnings: {}
+  # RELIANCE:
+  #   - "2026-07-18"

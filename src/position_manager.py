@@ -50,6 +50,13 @@ class PositionManager:
             logger.info(f"Closed position: {symbol}")
         return pos
 
+    def restore(self, positions: list[Position]) -> None:
+        """Re-adopt positions from a saved state file (crash recovery)."""
+        for pos in positions:
+            self._positions[pos.symbol] = pos
+            logger.warning(f"Restored position: {pos.direction} {pos.symbol} "
+                           f"qty={pos.quantity} entry={pos.entry_price} sl={pos.stop_loss}")
+
     def get_open_positions(self) -> list[Position]:
         return list(self._positions.values())
 
@@ -139,11 +146,3 @@ class PositionManager:
         if positions:
             logger.warning(f"EOD square-off triggered: {len(positions)} positions to close")
         return positions
-
-    def verify_all_closed(self) -> bool:
-        """Called after square-off. Returns True if no open positions remain."""
-        if self._positions:
-            logger.critical(f"Square-off incomplete: {list(self._positions.keys())} still open!")
-            return False
-        logger.info("All positions confirmed closed after square-off")
-        return True

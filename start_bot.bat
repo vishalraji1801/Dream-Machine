@@ -1,0 +1,37 @@
+@echo off
+title Trading Bot V1
+cd /d "%~dp0"
+
+echo.
+echo =========================================
+echo  Trading Bot — Starting...
+echo =========================================
+echo.
+
+.venv\Scripts\python.exe bot.py status
+echo.
+
+.venv\Scripts\python.exe bot.py auth
+if errorlevel 1 (
+    echo.
+    echo Bot not started ^(auth failed or market closed — see message above^).
+    echo Press any key to exit.
+    pause >nul
+    exit /b 1
+)
+
+:run
+echo.
+echo Starting bot...
+echo.
+.venv\Scripts\python.exe bot.py run
+if errorlevel 1 (
+    echo.
+    echo Bot CRASHED — restarting in 15 seconds... ^(Ctrl+C to abort^)
+    timeout /t 15 /nobreak >nul
+    goto run
+)
+
+echo.
+echo Bot stopped cleanly. Press any key to close.
+pause >nul

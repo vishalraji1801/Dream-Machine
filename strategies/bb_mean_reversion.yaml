@@ -1,0 +1,12 @@
+name: bb_mean_reversion
+# Mean-reversion — designed for RANGE/QUIET; disabled in strong trends.
+# All sets validated:false until walk-forward OOS confirms them (governing rule:
+# unvalidated params never run in live/paper — research/backtest only).
+regime_param_sets:
+  RANGE:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: false}
+  QUIET:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: false}
+  STRONG_TREND_UP:   {enabled: false}
+  STRONG_TREND_DOWN: {enabled: false}
+  HIGH_VOL_CHOP:     {enabled: false}
+  default:           {bb_std: 2.5, validated: false}
+regime_fit: {}   # filled by the analyst job from the ledger

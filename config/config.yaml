@@ -52,26 +52,68 @@ trading:
     - TRENT
     - UPL
     - BAJAJ-AUTO
-  timeframe: "5minute"
+  timeframe: "15minute"   # paper campaign: best risk-adjusted cell in the 1yr universe backtest
   market_open: "09:15"
   market_close: "15:30"
   square_off_time: "15:15"
   pre_close_check_time: "15:00"
+  entry_start_time: "09:45"   # no new entries before (opening volatility)
+  entry_end_time: "14:30"     # no new entries after (no time for move to play out)
 
 strategy:
-  name: momentum_vwap_breakout
+  # No strategy registered — clean slate. Set `name` to a strategy registered in
+  # src/strategy.py STRATEGY_REGISTRY once a real strategy is added; until then the
+  # engine returns HOLD (no trades). The params below are the shared indicator
+  # toolkit + regime/MTF/SL config that any strategy draws on.
+  name: "supertrend"          # active single strategy (used when router_enabled: false)
+  router_enabled: true        # regime router: pick strategy+params+weights per regime
   ema_fast: 9
   ema_slow: 21
   ema_crossover_lookback: 3
   rsi_period: 14
-  rsi_entry_threshold: 60
   volume_sma_period: 20
   volume_multiplier: 1.5
   entry_order_type: LIMIT
   sl_order_type: MARKET
+  regime_filter_enabled: true   # gate entries on NIFTY trend
+  regime_index_symbol: "NIFTY 50"
+  regime_ema: 20                # EMA window on 5-min index candles
+  regime_band_pct: 0.1          # neutral band around the EMA (%)
+  # SL/target sizing: 'pct' (fixed %) or 'atr' (volatility-adaptive)
+  sl_mode: pct
+  atr_period: 14
+  atr_sl_mult: 1.5              # SL = 1.5 x ATR when sl_mode: atr
+  atr_target_mult: 3.0          # target = 3 x ATR when sl_mode: atr
+  # Multi-timeframe confirmation (SCRUM-108 / B2) — off until it beats its
+  # own no-MTF baseline in walk-forward. Trading TF signal must agree with the
+  # higher-TF trend or the signal is vetoed (fail-closed while warming up).
+  mtf_confirm:
+    enabled: false
+    higher_tf: "1hr"      # 1hr | 30min
+    rule: "ema_trend"     # ema_trend | supertrend_dir
+    ema: 50
+  # ── Strategy library (YouTube-mined; ALL values are unvalidated sweep starts) ──
+  # E-005 Bollinger mean-reversion pullback (DAILY, long-only)
+  bb_ma_period: 200
+  bb_period: 20
+  bb_std: 2.5
+  bb_buy_limit_offset_pct: 3.0
+  bb_atr_stop_mult: 3.0
+  # E-003 Donchian 200-day breakout + ATR trailing stop (DAILY, long+short)
+  donchian_lookback: 200
+  donchian_atr_mult: 6.0
+  donchian_ride_atr: 20
+  # E-001 Supertrend flip (intraday) — uses supertrend_period/mult + sl_mode
+  supertrend_period: 10
+  supertrend_mult: 3.0
+  # E-008 Opening Range Breakout (intraday, NSE)
+  orb_or_end: "09:30"
+  orb_max_stop_cap_pts: 30
+  orb_r_multiple: 2.0
+  orb_volume_confirm: true
 
 risk:
-  total_capital: 500000
+  total_capital: 1000000   # paper campaign: Rs.10L virtual capital
   max_risk_per_trade_pct: 1.0
   max_open_positions: 3
   max_position_size_pct: 20.0
@@ -86,9 +128,42 @@ risk:
   max_trades_per_day: 8
   max_consecutive_api_errors: 3
   min_margin_threshold: 25000
+  max_spread_pct: 0.15   # skip entry when bid-ask spread exceeds this % of LTP
+  max_positions_per_sector: 2   # sector cap (V2) — no more than N open per sector
+  max_giveback_from_peak: 5000  # kill switch (V2) — halt if daily P&L falls this far from peak (0=off)
+
+costs:
+  enabled: true            # subtract estimated charges from every trade P&L
+  brokerage_pct: 0.03      # per executed order, capped below
+  brokerage_cap: 20        # Rs. cap per order
+  stt_sell_pct: 0.025      # STT on sell leg (intraday equity)
+  exchange_txn_pct: 0.00297  # NSE transaction charge on turnover
+  sebi_pct: 0.0001         # SEBI charges on turnover
+  stamp_buy_pct: 0.003     # stamp duty on buy leg
+  gst_pct: 18.0            # GST on brokerage + exchange + SEBI
 
 scheduler:
   cycle_interval_seconds: 300
+  heartbeat_interval_minutes: 60
+  max_tick_age_seconds: 30   # treat a streamed tick older than this as no-data
+
+data_feed:                   # tick-built candles (SCRUM-106): zero per-cycle REST
+  candles_from_ticks: true
+  seed_on_start: true        # one REST fetch per symbol at startup seeds history
+  seed_lookback_days: 12     # ~12 sessions of 15min so a 1hr EMA-50 MTF gate warms
+  min_bars: 30               # REST fallback until this many bars exist per symbol
+  max_bars: 260              # deep enough for the higher-TF confirmation gate
+
+ai:
+  overlay_enabled: true                      # apply a validated AI overlay at startup
+  overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist
+  telegram_outbox: "logs/telegram_outbox.txt"  # AI writes here; the bot relays to Telegram
+  # Hard bounds the overlay can never exceed (the safety sandbox):
+  allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty"]
+  min_stop_loss_pct: 0.5
+  max_stop_loss_pct: 2.0
+  min_target_pct: 0.5
+  max_target_pct: 5.0
 
 logging:
   level: INFO
@@ -97,3 +172,126 @@ logging:
 paper_trading:
   enabled: true           # Set to false to go live with real orders
   simulated_slippage_pct: 0.05  # 0.05% slippage applied to simulated fills
+  realistic_fills: true   # LIMIT orders fill only when live price crosses the limit
+
+universe:
+  enabled: false          # OPT-IN (V2 P3): when true, scan a dynamic universe
+                          # instead of the fixed watchlist. Needs a live-market
+                          # paper run to validate before use.
+  price_min: 100
+  price_max: 5000
+  fno_underlyings: []     # optional curated pool; empty -> use the watchlist
+  exclude: []             # symbols to always exclude (F&O ban-list, etc.)
+  # Backtest stock-selection quality filters (SCRUM-98):
+  min_turnover_cr: 50     # min avg daily turnover in Rs. crore (liquidity floor)
+  atr_pct_min: 1.0        # daily ATR as % of price — volatility floor
+  atr_pct_max: 6.0        # volatility ceiling
+  selection_lookback_days: 30
+  rvol:                   # A1: time-of-day relative-volume profiles
+    bucket_minutes: 15
+    window_sessions: 20
+    min_sessions: 10
+    staleness_sessions: 3
+    score_weight: 0.4     # scanner ranking weight for RVOL
+  require_rvol: false     # when true, a symbol with no usable RVOL is unrankable
+
+scanner:
+  select_top_n: 10        # rank the watchlist and trade only the top-N stocks each cycle
+  top_n: 30               # candidates handed to the strategy engine each cycle
+  shadow_enabled: true    # A0: persist full point-in-time rankings every cycle
+  w_pct_change: 1.0
+  w_range_pos: 2.0
+  w_gap: 0.5
+
+# Regime router (used when strategy.router_enabled: true). Reads strategies/*.yaml.
+router:
+  ceiling: 1.0            # max total weight the day permits (premarket can lower)
+  min_fit_pf: 1.0         # a strategy is an "edge" only above this PF
+  min_trades: 30          # small-sample floor for regime_fit
+  max_weight_change: 0.2  # per-cycle weight hysteresis
+  regime_interval_minutes: 60   # re-check the regime once an hour (0 = every cycle);
+                                # between checks the last regime is reused, entries
+                                # are still scanned every 5-min cycle
+regime:                   # regime classifier thresholds (sweep candidates)
+  adx_trend: 20.0         # ADX >= this + clear side = trend (lowered so mild trends engage)
+  adx_range: 18.0
+  atr_pct_high: 1.0
+  atr_pct_low: 0.3
+  min_dwell_bars: 3       # anti-whipsaw: a new regime must persist this many bars
+  min_bars: 60
+market_state:             # MarketState indicator windows
+  ms_ema_slow: 50
+  ms_adx_period: 14
+  ms_bb_period: 20
+
+events:
+  path: "config/events.yaml"   # market-wide + per-stock event days to skip
+
+backtest:
+  fill_mode: close        # 'close' (signal-candle close) or 'next_open' (honest breakout fills)
+  slippage_pct: 0.0       # extra slippage applied to next_open fills
+
+backtest_data:            # streamlined multi-timeframe pipeline (backtest_run.py)
+  lookback_days: 365      # one year of history per timeframe
+  num_stocks: 30          # how many universe-selected stocks to backtest
+  request_pause_sec: 0.34 # ~3 Kite historical requests/sec
+  store_path: "data_cache/backtest_data.db"
+  timeframes:
+    - {label: "1min",  interval: "minute",   max_days: 60}
+    - {label: "5min",  interval: "5minute",  max_days: 100}
+    - {label: "15min", interval: "15minute", max_days: 200}
+    - {label: "30min", interval: "30minute", max_days: 200}
+    - {label: "1hr",   interval: "60minute", max_days: 400}
+
+# Sector map for the sector cap. Symbols not listed are treated as their own sector.
+sectors:
+  RELIANCE: ENERGY
+  BPCL: ENERGY
+  COALINDIA: ENERGY
+  NTPC: ENERGY
+  ONGC: ENERGY
+  POWERGRID: ENERGY
+  TCS: IT
+  INFY: IT
+  HCLTECH: IT
+  WIPRO: IT
+  TECHM: IT
+  HDFCBANK: BANK
+  ICICIBANK: BANK
+  SBIN: BANK
+  KOTAKBANK: BANK
+  AXISBANK: BANK
+  INDUSINDBK: BANK
+  BAJFINANCE: FINSERV
+  BAJAJFINSV: FINSERV
+  HDFCLIFE: FINSERV
+  SBILIFE: FINSERV
+  HINDUNILVR: FMCG
+  ITC: FMCG
+  NESTLEIND: FMCG
+  BRITANNIA: FMCG
+  TATACONSUM: FMCG
+  SUNPHARMA: PHARMA
+  CIPLA: PHARMA
+  DIVISLAB: PHARMA
+  DRREDDY: PHARMA
+  MARUTI: AUTO
+  EICHERMOT: AUTO
+  HEROMOTOCO: AUTO
+  M&M: AUTO
+  TATAMOTORS: AUTO
+  BAJAJ-AUTO: AUTO
+  HINDALCO: METAL
+  JSWSTEEL: METAL
+  TATASTEEL: METAL
+  ULTRACEMCO: CEMENT
+  GRASIM: CEMENT
+  SHREECEM: CEMENT
+  ASIANPAINT: CONSUMER
+  TITAN: CONSUMER
+  TRENT: CONSUMER
+  BHARTIARTL: TELECOM
+  LT: INFRA
+  ADANIENT: INFRA
+  ADANIPORTS: INFRA
+  UPL: CHEMICALS

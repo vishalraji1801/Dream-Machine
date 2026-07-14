@@ -1,0 +1,15 @@
+name: supertrend
+# Trend-following flip. Params + fit SEEDED from the TCS walk-forward result
+# (period 22 / mult 3.0 was the OOS winner: 120 trades, PF 1.12). validated:true so
+# the router may run it in paper. This SEED is replaced by the learned map once the
+# ledger accrues real per-(strategy x regime) history (regime_analyst weekly job).
+regime_param_sets:
+  STRONG_TREND_UP:   {supertrend_period: 22, supertrend_mult: 3.0, validated: true, oos_ref: tcs_15min_wf}
+  STRONG_TREND_DOWN: {supertrend_period: 22, supertrend_mult: 3.0, validated: true, oos_ref: tcs_15min_wf}
+  RANGE:             {enabled: false}
+  QUIET:             {enabled: false}
+  HIGH_VOL_CHOP:     {enabled: false}
+  default:           {supertrend_period: 22, supertrend_mult: 3.0, validated: true, oos_ref: tcs_15min_wf}
+regime_fit:
+  STRONG_TREND_UP:   {pf: 1.12, trades: 120, source: seed_wf_tcs}
+  STRONG_TREND_DOWN: {pf: 1.12, trades: 120, source: seed_wf_tcs}

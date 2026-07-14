@@ -21,3 +21,16 @@ logs/*
 # OS
 .DS_Store
 Thumbs.db
+
+# Backtest candle cache
+data_cache/
+
+# AI runtime-written files (Claude overwrites these; do not track)
+config/ai_overlay.yaml
+
+# A1 volume profiles (runtime data)
+data_cache/profiles/
+
+# Web app auth token (single-user, never commit)
+config/webapp_token.txt
+webapp/static/

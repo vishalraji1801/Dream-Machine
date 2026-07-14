@@ -1,4 +1,4 @@
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
 import pytest
 
 from src.data_streamer import DataStreamer
@@ -26,6 +26,39 @@ def _make_tick(token, ltp=2850.0, open_=2840.0, high=2870.0, low=2835.0, close=2
         "ohlc": {"open": open_, "high": high, "low": low, "close": close},
         "volume": volume,
     }
+
+
+# ── stale-tick guard (V2 P1) ──────────────────────────────────────────────────
+
+def test_fresh_tick_returned_within_age(instruments):
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments, max_tick_age_seconds=30)
+    ds._connected = True
+    ds._on_ticks(MagicMock(), [_make_tick(738561)])
+    quotes = ds.get_latest_quotes(["RELIANCE"])
+    assert quotes is not None and "RELIANCE" in quotes
+
+
+def test_stale_tick_skipped(instruments):
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments, max_tick_age_seconds=30)
+    ds._connected = True
+    with patch("src.data_streamer.time.time", return_value=1000.0):
+        ds._on_ticks(MagicMock(), [_make_tick(738561)])
+    with patch("src.data_streamer.time.time", return_value=1040.0):  # 40s later > 30s
+        quotes = ds.get_latest_quotes(["RELIANCE"])
+    assert quotes is None  # only symbol was stale -> nothing to return
+
+
+def test_age_guard_disabled_when_zero(instruments):
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments, max_tick_age_seconds=0)
+    ds._connected = True
+    with patch("src.data_streamer.time.time", return_value=1000.0):
+        ds._on_ticks(MagicMock(), [_make_tick(738561)])
+    with patch("src.data_streamer.time.time", return_value=999999.0):
+        quotes = ds.get_latest_quotes(["RELIANCE"])
+    assert quotes is not None  # guard off -> stale tick still returned
 
 
 # ── connect / disconnect ──────────────────────────────────────────────────────
@@ -143,3 +176,23 @@ def test_on_error_does_not_raise(streamer):
 
 def test_on_reconnect_does_not_raise(streamer):
     streamer._on_reconnect(MagicMock(), 3)
+
+
+# ── SCRUM-106: ticks feed the candle builder ──────────────────────────────────
+
+def test_on_ticks_feeds_candle_builder(instruments):
+    builder = MagicMock()
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments, candle_builder=builder)
+    tick = _make_tick(738561, ltp=2851.0)
+    tick["volume_traded"] = 123456
+    ds._on_ticks(MagicMock(), [tick])
+    builder.add_tick.assert_called_once()
+    args = builder.add_tick.call_args.args
+    assert args[0] == "RELIANCE" and args[1] == 2851.0 and args[2] == 123456
+
+
+def test_on_ticks_without_builder_is_fine(instruments):
+    with patch("src.data_streamer.KiteTicker"):
+        ds = DataStreamer("k", "t", instruments)      # no builder
+    ds._on_ticks(MagicMock(), [_make_tick(738561)])   # must not raise
