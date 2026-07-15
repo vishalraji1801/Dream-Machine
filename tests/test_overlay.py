@@ -1,10 +1,10 @@
 import yaml
 
-from src.ai_overlay import apply_overlay, load_overlay
+from src.overlay import apply_overlay, load_overlay
 
 
 def _cfg(tmp_path, overlay_body=None, enabled=True):
-    path = tmp_path / "ai_overlay.yaml"
+    path = tmp_path / "overlay.yaml"
     if overlay_body is not None:
         path.write_text(yaml.safe_dump(overlay_body))
     cfg = {
@@ -13,7 +13,7 @@ def _cfg(tmp_path, overlay_body=None, enabled=True):
         "strategy": {"name": "momentum_vwap_breakout", "rsi_entry_threshold": 60,
                      "volume_multiplier": 1.5},
         "risk": {"stop_loss_pct": 1.0, "target_pct": 2.0, "max_trades_per_day": 8},
-        "ai": {
+        "overlay": {
             "overlay_enabled": enabled,
             "overlay_path": str(path),
             "allowed_strategies": ["momentum_vwap_breakout", "vwap_mean_reversion", "orb"],
@@ -126,7 +126,7 @@ def test_reject_max_trades_out_of_bounds(tmp_path):
 
 
 def test_reject_unparseable_yaml(tmp_path):
-    path = tmp_path / "ai_overlay.yaml"
+    path = tmp_path / "overlay.yaml"
     path.write_text("{not: valid: yaml: here")
     cfg = _cfg(tmp_path)
     overlay, err = load_overlay(cfg)
@@ -135,7 +135,7 @@ def test_reject_unparseable_yaml(tmp_path):
 
 
 def test_reject_non_mapping(tmp_path):
-    path = tmp_path / "ai_overlay.yaml"
+    path = tmp_path / "overlay.yaml"
     path.write_text("- just\n- a\n- list\n")
     cfg = _cfg(tmp_path)
     overlay, err = load_overlay(cfg)

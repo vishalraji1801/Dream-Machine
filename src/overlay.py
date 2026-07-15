@@ -1,13 +1,14 @@
 """
-AI overlay — the safety sandbox for the scheduled Claude strategist.
+Config overlay — a bounded, validated parameter sandbox.
 
-Claude *proposes* by writing config/ai_overlay.yaml; deterministic code *disposes*.
-The bot loads the overlay at startup and validates every field against hard bounds
-from the `ai:` config section. Anything out of bounds, unknown, or unparseable makes
-the WHOLE overlay rejected — the bot falls back to config.yaml and alerts on Telegram.
+The auto-tuner *proposes* by writing config/overlay.yaml (its walk-forward winner);
+deterministic code *disposes*. The bot loads the overlay at startup and validates
+every field against hard bounds from the `overlay:` config section. Anything out of
+bounds, unknown, or unparseable rejects the WHOLE overlay — the bot falls back to
+config.yaml and alerts.
 
-An LLM never touches the live order path. It can only nudge a small, whitelisted set
-of knobs, and only within limits you define here.
+Only a small, whitelisted set of knobs can be adjusted, and only within the limits
+defined here. Risk caps and capital are never adjustable.
 """
 import os
 from typing import Optional
@@ -16,7 +17,7 @@ import yaml
 
 from src.logger import get_logger
 
-logger = get_logger("ai_overlay")
+logger = get_logger("overlay")
 
 # Numeric strategy params the tuner/strategist may adjust, with hard bounds.
 # Anything outside these ranges rejects the WHOLE overlay.
@@ -81,11 +82,11 @@ def load_overlay(cfg: dict) -> tuple[Optional[dict], Optional[str]]:
     the overlay is None and error is a human-readable reason for the alert.
     Returns (None, None) when no overlay file exists (the normal case).
     """
-    ai = cfg.get("ai", {})
+    ai = cfg.get("overlay", {})
     if not ai.get("overlay_enabled"):
         return None, None
 
-    path = ai.get("overlay_path", "config/ai_overlay.yaml")
+    path = ai.get("overlay_path", "config/overlay.yaml")
     if not os.path.exists(path):
         return None, None
 
@@ -117,7 +118,7 @@ def apply_overlay(cfg: dict, overlay: dict) -> dict:
 
 
 def _validate(overlay: dict, cfg: dict) -> Optional[str]:
-    ai = cfg.get("ai", {})
+    ai = cfg.get("overlay", {})
     for section, fields in overlay.items():
         if section not in _ADJUSTABLE:
             return f"section '{section}' is not adjustable by overlay"

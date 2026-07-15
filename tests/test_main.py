@@ -1075,35 +1075,6 @@ def test_trading_cycle_records_snapshot():
     ctx["db"].record_snapshot.assert_called_once()
 
 
-# ── V2 P2: AI Telegram outbox relay ───────────────────────────────────────────
-
-def test_relay_ai_outbox_sends_and_clears(tmp_path):
-    outbox = tmp_path / "telegram_outbox.txt"
-    outbox.write_text("Post-market: 3 trades, net +Rs.420, PF 1.4")
-    ctx = _make_ctx()
-    ctx["cfg"]["ai"] = {"telegram_outbox": str(outbox)}
-    main._relay_ai_outbox(ctx)
-    ctx["alert"].send_raw.assert_called_once()
-    assert "Post-market" in ctx["alert"].send_raw.call_args.args[0]
-    assert outbox.read_text() == ""  # cleared after relay
-
-
-def test_relay_ai_outbox_noop_when_empty(tmp_path):
-    outbox = tmp_path / "telegram_outbox.txt"
-    outbox.write_text("   \n")
-    ctx = _make_ctx()
-    ctx["cfg"]["ai"] = {"telegram_outbox": str(outbox)}
-    main._relay_ai_outbox(ctx)
-    ctx["alert"].send_raw.assert_not_called()
-
-
-def test_relay_ai_outbox_noop_when_no_file(tmp_path):
-    ctx = _make_ctx()
-    ctx["cfg"]["ai"] = {"telegram_outbox": str(tmp_path / "missing.txt")}
-    main._relay_ai_outbox(ctx)  # should not raise
-    ctx["alert"].send_raw.assert_not_called()
-
-
 # ── Transaction costs (SCRUM-65) ──────────────────────────────────────────────
 
 def test_execute_exit_subtracts_costs_when_enabled():

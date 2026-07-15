@@ -12,7 +12,7 @@ from datetime import datetime
 import yaml
 from dotenv import load_dotenv
 
-from src.ai_overlay import apply_overlay, load_overlay
+from src.overlay import apply_overlay, load_overlay
 from src.alert_manager import AlertManager
 from src.auth import load_kite_session
 from src.costs import estimate_intraday_costs, trade_leg_values
@@ -78,15 +78,15 @@ def startup() -> dict:
         tag="PAPER" if paper_flag else "LIVE",
     )
 
-    # AI overlay (P5) — validated sandbox written by the scheduled Claude strategist.
+    # Config overlay — validated, bounded params written by the auto-tuner.
     overlay, ov_err = load_overlay(cfg)
     if ov_err:
-        logger.error(f"AI overlay REJECTED: {ov_err}")
-        alert.send_raw(f"AI overlay REJECTED — running on config.yaml. Reason: {ov_err}")
+        logger.error(f"Overlay REJECTED: {ov_err}")
+        alert.send_raw(f"Overlay REJECTED — running on config.yaml. Reason: {ov_err}")
     elif overlay:
         cfg = apply_overlay(cfg, overlay)
-        logger.warning(f"AI overlay applied: {overlay}")
-        alert.send_raw(f"AI overlay applied for today: {overlay}")
+        logger.warning(f"Overlay applied: {overlay}")
+        alert.send_raw(f"Overlay applied for today: {overlay}")
 
     fetcher = DataFetcher(kite, cfg)
     symbols = list(cfg["trading"]["watchlist"])
@@ -863,21 +863,6 @@ def _alert_signal(ctx: dict, symbol: str, signal, action: str) -> None:
                       target=signal.target, action=action)
 
 
-def _relay_ai_outbox(ctx: dict) -> None:
-    """Send anything the scheduled Claude agents left in the Telegram outbox, then clear it."""
-    path = ctx["cfg"].get("ai", {}).get("telegram_outbox")
-    if not path or not os.path.exists(path):
-        return
-    try:
-        with open(path, encoding="utf-8") as f:
-            text = f.read().strip()
-        if text:
-            ctx["alert"].send_raw(f"[AI] {text}")
-        open(path, "w").close()  # truncate after relaying
-    except OSError as exc:
-        logger.warning(f"AI outbox relay failed: {exc}")
-
-
 def _maybe_heartbeat(ctx: dict, hb: dict) -> None:
     """Send an hourly 'alive' message so silence itself becomes an alert (SCRUM-64)."""
     interval = ctx["cfg"]["scheduler"].get("heartbeat_interval_minutes", 60) * 60
@@ -1009,7 +994,6 @@ def run() -> int:
             if stop_event.is_set():
                 break
             _maybe_heartbeat(ctx, hb)
-            _relay_ai_outbox(ctx)
             if not ctx["calendar"].is_trading_day():
                 logger.info("Market holiday/weekend — idling")
                 time.sleep(300)

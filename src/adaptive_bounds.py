@@ -9,7 +9,7 @@ not in this surface at all.
 """
 from typing import Optional
 
-from src.ai_overlay import _STRATEGY_BOUNDS
+from src.overlay import _STRATEGY_BOUNDS
 
 # The adaptive-parameter bounds default to the overlay's strategy bounds; callers
 # may pass an extended dict as real strategies add their own tunables.
