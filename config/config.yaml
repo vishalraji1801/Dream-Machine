@@ -154,10 +154,9 @@ data_feed:                   # tick-built candles (SCRUM-106): zero per-cycle RE
   min_bars: 30               # REST fallback until this many bars exist per symbol
   max_bars: 260              # deep enough for the higher-TF confirmation gate
 
-ai:
-  overlay_enabled: true                      # apply a validated AI overlay at startup
-  overlay_path: "config/ai_overlay.yaml"     # written by the scheduled Claude strategist
-  telegram_outbox: "logs/telegram_outbox.txt"  # AI writes here; the bot relays to Telegram
+overlay:
+  overlay_enabled: true                      # apply the auto-tuner's validated overlay at startup
+  overlay_path: "config/overlay.yaml"        # written by the auto-tuner (walk-forward winner)
   # Hard bounds the overlay can never exceed (the safety sandbox):
   allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty"]
   min_stop_loss_pct: 0.5
