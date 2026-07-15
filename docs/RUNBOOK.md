@@ -16,12 +16,12 @@ backtest  ──►  validate  ──►  PAPER campaign  ──►  golive gate
 ## 1. Research: backtest & validate
 
 ```
-bot backtest --offline --no-analyze          # all 13 strategies x 5 TFs on stored data
-bot backtest --symbols HDFCBANK,TCS          # online: delta-load fresh data, then run + Claude analysis
-bot validate --strategy breakout_retest --days 90 --param br_lookback=15,20,30
+bot backtest --offline --symbols TCS         # backtest stored data (no network/auth)
+bot backtest --symbols HDFCBANK,TCS          # online: delta-load fresh data, then run
+bot validate --strategy supertrend --days 90 --param supertrend_period=10,14,22
 ```
 
-- Backtest results: `logs/backtest_matrix_*.md` (+ Claude verdict in `logs/ai_review.md`).
+- Backtest results: `logs/backtest_matrix_*.md`.
 - Only a strategy that PASSES the validate.py scorecard (out-of-sample) earns a
   paper campaign. In-sample numbers alone mean nothing.
 
@@ -37,8 +37,6 @@ bot run         # starts the bot in the mode shown by `bot status`
 - Paper mode simulates realistic fills; every trade lands in `logs/trades.db`.
 - Control from Telegram: `/status`, `/pause`, `/resume`, `/stop`.
 - Check progress anytime: `bot status` (shows trades accumulated vs the gate).
-- Scheduled Claude agents (post-market/pre-market/weekly) report automatically
-  if registered: `.\setup_ai_agents.ps1`.
 
 ## 3. Going live
 

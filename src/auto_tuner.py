@@ -1,18 +1,15 @@
 """
-Auto-tuner (SCRUM-103) — backtest + sweep + AI, integrated.
+Auto-tuner — walk-forward backtest + parameter sweep (deterministic).
 
 For each strategy it runs a WALK-FORWARD parameter sweep (never a plain
 in-sample sweep — parameters that only win on the data they were fitted to are
 noise), picks the most *stable* fold-winning parameters, and, if the stitched
-out-of-sample result clears the bar, writes the winner into
-config/ai_overlay.yaml.
+out-of-sample result clears the bar, writes the winner into config/overlay.yaml.
 
 The overlay is the safe channel: main.py validates every field against hard
 bounds at startup and falls back to config.yaml on any violation — so the
 auto-tuner can adjust indicator parameters and switch strategies, but can never
-push the bot outside limits defined in code. The headless Claude reviewer then
-audits the decision and may veto (rewrite the overlay to a no-op) — it cannot
-exceed the same bounds.
+push the bot outside the limits defined in code.
 """
 import copy
 from collections import Counter
@@ -21,7 +18,7 @@ from typing import Optional
 
 import yaml
 
-from src.ai_overlay import _validate
+from src.overlay import _validate
 from src.backtester import Backtester
 from src.logger import get_logger
 from src.param_sweep import expand_grid
@@ -125,7 +122,7 @@ def write_overlay(winner: dict, cfg: dict,
     same hard-bounds validator the bot uses at startup; an invalid overlay is
     NOT written. Returns (written, message).
     """
-    from src.ai_overlay import _ADJUSTABLE
+    from src.overlay import _ADJUSTABLE
     adjustable = _ADJUSTABLE["strategy"]
     params = {k: v for k, v in winner["params"].items() if k in adjustable}
 
@@ -144,10 +141,10 @@ def write_overlay(winner: dict, cfg: dict,
         },
         **overlay,
     }
-    path = path or cfg.get("ai", {}).get("overlay_path", "config/ai_overlay.yaml")
+    path = path or cfg.get("overlay", {}).get("overlay_path", "config/overlay.yaml")
     with open(path, "w", encoding="utf-8") as f:
         f.write("# Written by auto_tuner — walk-forward OOS winner. The bot validates\n"
-                "# every field against hard bounds at startup (src/ai_overlay.py).\n")
+                "# every field against hard bounds at startup (src/overlay.py).\n")
         yaml.safe_dump(doc, f, sort_keys=False)
     logger.warning(f"Overlay updated by auto-tuner: {winner['strategy']} {params}")
     return True, f"overlay written: {winner['strategy']} {params}"
@@ -172,7 +169,7 @@ def format_report(results: list[dict], winner: Optional[dict],
             f"{r['oos_max_dd']} | {r['degradation_pct']} |")
     lines.append("")
     if winner:
-        lines.append(f"WINNER: {winner['strategy']} {winner['params']} -> written to ai_overlay.yaml")
+        lines.append(f"WINNER: {winner['strategy']} {winner['params']} -> written to overlay.yaml")
     else:
         lines.append("NO WINNER: no strategy cleared the OOS acceptance bar "
                      "(trades>=30, PF>=1.2, net>0). Overlay left untouched.")

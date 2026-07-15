@@ -1,23 +1,21 @@
 """
-Streamlined multi-timeframe backtest pipeline (SCRUM-92).
+Streamlined multi-timeframe backtest pipeline.
 
 One command:
   1. select stocks with the universe builder
   2. pull a year of 1/5/15/30/60-min candles into the backtest DB (skip if fetched today)
-  3. run the strategy across every timeframe
-  4. hand the summary to the headless Claude analyst (subscription-only)
+  3. run the strategy across every timeframe and write the results matrix
 
 Requires a valid Kite session (run auth.py first).
 
 Usage:
-  python backtest_run.py                       # default: config num_stocks, analyze
+  python backtest_run.py                       # default: config num_stocks
   python backtest_run.py --num-stocks 20
   python backtest_run.py --rebuild             # clear + refetch all data
-  python backtest_run.py --no-analyze          # skip the Claude step
+  python backtest_run.py --offline             # backtest stored symbols (no network)
 """
 import argparse
 import os
-import subprocess
 import sys
 
 import yaml
@@ -46,7 +44,6 @@ def main() -> None:
     ap.add_argument("--offline", action="store_true",
                     help="skip Kite: backtest symbols already in the store (no network/auth)")
     ap.add_argument("--rebuild", action="store_true", help="clear the store and refetch")
-    ap.add_argument("--no-analyze", action="store_true", help="skip the Claude analyst step")
     ap.add_argument("--mtf", action="store_true",
                     help="enable multi-timeframe confirmation (needs a deep --window, "
                          "~260, so the higher-TF EMA gate can warm up)")
@@ -85,7 +82,6 @@ def main() -> None:
                               index_symbol=index_symbol if has_index else None, window=args.window)
         path = write_matrix(rows)
         print("\n" + format_matrix(rows) + f"\n\nMatrix written: {path}")
-        _maybe_analyze(args)
         return
 
     kite = load_kite_session()
@@ -123,20 +119,6 @@ def main() -> None:
     path = write_matrix(rows)
     print("\n" + format_matrix(rows))
     print(f"\nMatrix written: {path}")
-
-    # 4. hand to the headless Claude analyst
-    _maybe_analyze(args)
-
-
-def _maybe_analyze(args) -> None:
-    """Invoke the headless Claude backtest analyst (subscription-only) unless skipped."""
-    if args.no_analyze:
-        return
-    print("\nInvoking Claude backtest analyst (subscription-only)...")
-    rc = subprocess.run([sys.executable, "run_ai_agent.py", "backtest"],
-                        cwd=os.path.dirname(os.path.abspath(__file__)))
-    if rc.returncode != 0:
-        print("Claude analysis step did not complete (is `claude` installed and logged in?).")
 
 
 if __name__ == "__main__":

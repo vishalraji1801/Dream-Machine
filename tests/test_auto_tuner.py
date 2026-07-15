@@ -1,7 +1,7 @@
 import pandas as pd
 import yaml
 
-from src.ai_overlay import load_overlay
+from src.overlay import load_overlay
 from src.auto_tuner import (DEFAULT_GRIDS, _stable_params, format_report,
                             pick_winner, tune_strategy, write_overlay)
 from src.backtester import BacktestResult, BacktestTrade
@@ -91,8 +91,8 @@ def _cfg(tmp_path):
     return {
         "trading": {"market_open": "09:15", "market_close": "15:30"},
         "strategy": {}, "risk": {},
-        "ai": {"overlay_enabled": True,
-               "overlay_path": str(tmp_path / "ai_overlay.yaml"),
+        "overlay": {"overlay_enabled": True,
+               "overlay_path": str(tmp_path / "overlay.yaml"),
                "allowed_strategies": ["breakout_retest", "supertrend"],
                "min_stop_loss_pct": 0.5, "max_stop_loss_pct": 2.0,
                "min_target_pct": 0.5, "max_target_pct": 5.0},
@@ -110,7 +110,7 @@ def test_write_overlay_valid_and_loadable(tmp_path):
     assert overlay["strategy"]["name"] == "breakout_retest"
     assert overlay["strategy"]["br_lookback"] == 20
     # meta recorded for auditability
-    raw = yaml.safe_load(open(cfg["ai"]["overlay_path"]))
+    raw = yaml.safe_load(open(cfg["overlay"]["overlay_path"]))
     assert raw["meta"]["written_by"] == "auto_tuner"
 
 
@@ -137,9 +137,9 @@ def test_write_overlay_filters_non_adjustable_params(tmp_path):
 
 def test_every_grid_value_is_within_overlay_bounds(tmp_path):
     """Everything the tuner can propose must survive the overlay validator."""
-    from src.ai_overlay import _validate
+    from src.overlay import _validate
     cfg = _cfg(tmp_path)
-    cfg["ai"]["allowed_strategies"] = list(DEFAULT_GRIDS)
+    cfg["overlay"]["allowed_strategies"] = list(DEFAULT_GRIDS)
     from src.param_sweep import expand_grid
     for strat, spec in DEFAULT_GRIDS.items():
         for combo in expand_grid(spec):
