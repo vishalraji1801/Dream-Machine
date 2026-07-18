@@ -12,6 +12,20 @@ SWING_GATE = {"min_weeks": 8, "min_round_trips": 30, "min_pf": 1.2, "max_diverge
 MAX_CORR = 0.7
 
 
+def paper_book_for(candidate) -> str:
+    """Which sleeve's paper book an ALIVE candidate joins — never the other one."""
+    return candidate.sleeve
+
+
+def is_tradeable(candidate, cfg: dict) -> bool:
+    """An ALIVE intraday candidate stays inert while intraday.enabled is false — it
+    accumulates as the evidence required to justify re-enabling the sleeve (section
+    11.3), but does not trade. Swing always tradeable when the swing sleeve is on."""
+    if candidate.sleeve == "intraday":
+        return bool(cfg.get("intraday", {}).get("enabled", False))
+    return bool(cfg.get("swing", {}).get("enabled", True))
+
+
 def swing_paper_gate(paper: dict, backtest_pf: float, gate: dict = SWING_GATE):
     """paper: {weeks, round_trips, pf}. Returns (passed, reason)."""
     if paper["weeks"] < gate["min_weeks"]:

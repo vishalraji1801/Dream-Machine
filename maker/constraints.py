@@ -44,10 +44,12 @@ def estimate_edge_pct(candidate: Candidate, product: str) -> float:
     return atrp
 
 
-def check(candidate: Candidate, product: str = "delivery", seen_cids=(),
+def check(candidate: Candidate, product: str = None, seen_cids=(),
           cost_multiple_min: float = 3.0) -> tuple[bool, str, dict]:
     """Return (ok, reason, detail). reason is 'ok' when it passes; otherwise a
-    GEN_REJECT code with the supporting math in detail (recorded on the trial row)."""
+    GEN_REJECT code with the supporting math in detail (recorded on the trial row).
+    product defaults to the candidate's own (swing->delivery, intraday->intraday)."""
+    product = product or getattr(candidate, "product", "delivery")
     if candidate.n_conditions > 3 or candidate.n_params > 4:
         return False, "parsimony", {"n_conditions": candidate.n_conditions,
                                     "n_params": candidate.n_params}

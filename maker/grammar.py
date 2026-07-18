@@ -35,12 +35,23 @@ class Candidate:
     n_conditions: int
     n_params: int
     rationale: str
+    sleeve: str = "swing"       # swing | intraday
+    timeframe: str = "1d"       # swing: 1d/1w  ·  intraday: 5m/15m
+    product: str = "delivery"   # derived: swing -> delivery(CNC), intraday -> intraday(MIS)
     cost_check: dict = field(default_factory=dict)
 
 
-def _canonical(direction: str, blocks: dict) -> str:
+def product_for_sleeve(sleeve: str) -> str:
+    return "intraday" if sleeve == "intraday" else "delivery"
+
+
+def default_timeframe(sleeve: str) -> str:
+    return "15m" if sleeve == "intraday" else "1d"
+
+
+def _canonical(direction, blocks, sleeve="swing", timeframe="1d") -> str:
     payload = {
-        "dir": direction,
+        "dir": direction, "sleeve": sleeve, "tf": timeframe,
         "blocks": {slot: {"name": bi.name,
                           "params": {k: bi.params[k] for k in sorted(bi.params)}}
                    for slot, bi in sorted(blocks.items())},
@@ -48,15 +59,21 @@ def _canonical(direction: str, blocks: dict) -> str:
     return json.dumps(payload, sort_keys=True, default=list)
 
 
-def _cid(direction: str, blocks: dict) -> str:
-    return hashlib.sha256(_canonical(direction, blocks).encode()).hexdigest()[:16]
+def _cid(direction, blocks, sleeve="swing", timeframe="1d") -> str:
+    return hashlib.sha256(_canonical(direction, blocks, sleeve, timeframe).encode()).hexdigest()[:16]
 
 
-def make_candidate(direction: str, blocks: dict) -> Candidate:
+def make_candidate(direction: str, blocks: dict, sleeve: str = "swing",
+                   timeframe: str = None) -> Candidate:
     """blocks: {slot: (block_name, {param: value})}. Validates params against the
-    block's declared grid, computes cid / condition & param counts / joined rationale."""
+    block's declared grid, computes cid / condition & param counts / joined rationale.
+    sleeve selects product (swing->delivery/CNC, intraday->MIS) and default timeframe."""
     if direction not in ("long", "short", "both"):
         raise ValueError(f"bad direction {direction!r}")
+    if sleeve not in ("swing", "intraday"):
+        raise ValueError(f"bad sleeve {sleeve!r}")
+    timeframe = timeframe or default_timeframe(sleeve)
+    product = product_for_sleeve(sleeve)
     inst, n_params = {}, 0
     for slot, (name, params) in blocks.items():
         b = BLOCKS[name]
@@ -76,7 +93,8 @@ def make_candidate(direction: str, blocks: dict) -> Candidate:
     if n_params > 4:
         raise ValueError(f"parsimony (RULE 3): {n_params} tunable params > 4")
     rationale = " ".join(BLOCKS[bi.name].rationale for bi in inst.values())
-    return Candidate(_cid(direction, inst), direction, inst, n_conditions, n_params, rationale)
+    return Candidate(_cid(direction, inst, sleeve, timeframe), direction, inst,
+                     n_conditions, n_params, rationale, sleeve, timeframe, product)
 
 
 # ── indicator helpers (reuse the existing pinned math) ────────────────────────
