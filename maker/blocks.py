@@ -71,6 +71,14 @@ _LIBRARY = [
     _b("setup", "band_touch", {"bollinger": [(20, 2.0), (20, 2.5)], "side": ["lower", "upper"]},
        "A close beyond a Bollinger band is a statistical stretch that tends to revert "
        "within a trend."),
+    # ── support/resistance setups (section 15) — tier-1 has no detection params ──
+    _b("setup", "objective_level", {"level": ["pdh", "pdl", "pdc", "round"]},
+       "Prior-day and round levels are objective S/R the whole market watches; with no "
+       "detection parameters they cannot be curve-fit."),
+    _b("setup", "pivot_cluster_level", {"touch_min": [2, 3], "swing_n": [5, 10, 20],
+                                        "cluster_tol_atr": [0.25, 0.5], "zone_atr": [0.25, 0.5]},
+       "Repeated swing-pivot touches mark a real S/R shelf; more and more-recent touches "
+       "make it stronger (highest overfitting risk — its params count against the budget)."),
     # ── trigger ─────────────────────────────────────────────────────────────
     _b("trigger", "breakout_close", {"of": ["setup_level", "prior_day_high", "prior_day_low"]},
        "Requiring a close beyond the level filters intrabar fake-outs."),
