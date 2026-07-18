@@ -49,7 +49,10 @@ def screen_candidate(candidate, candles: dict, cfg: dict, window: int = 160,
     try:
         c = copy.deepcopy(cfg)
         c.setdefault("strategy", {})["name"] = candidate.cid
-        c["strategy"]["long_only"] = True
+        # long_only applies to SWING (CNC can't hold shorts overnight); intraday (MIS)
+        # may short and square off, so it keeps both sides.
+        product = str(c.get("costs", {}).get("product", "delivery")).lower()
+        c["strategy"]["long_only"] = product in ("delivery", "cnc")
         res = Backtester(c, window=window).run(candles)
     finally:
         STRATEGY_REGISTRY.pop(candidate.cid, None)
