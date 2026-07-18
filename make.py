@@ -2,8 +2,9 @@
 """bot.py make ... — Strategy Maker CLI (spec section 9).
 
     bot.py make status                         funnel counts, N_effective, current bar
-    bot.py make generate --max-trials N --seed S --symbols K
+    bot.py make generate --max-trials N --seed S --symbols K [--workers W]
                                                run the full funnel on the daily store
+                                               (--workers >1 = process-parallel, identical)
     bot.py make screen|gauntlet|reserve        (run as part of 'generate' in this build)
 """
 import argparse
@@ -34,7 +35,6 @@ def cmd_status(_args) -> int:
 
 
 def cmd_generate(args) -> int:
-    from maker.campaign import run_campaign
     from src.backtest_store import BacktestStore
     cfg = yaml.safe_load(open(os.path.join(ROOT, "config", "config.yaml")))
     cfg["strategy"]["regime_filter_enabled"] = False
@@ -46,8 +46,15 @@ def cmd_generate(args) -> int:
         print("No daily history in the store. Fetch the F&O daily universe first.")
         return 1
     candles = {s: store.get_candles(s, "day") for s in syms}
-    print(f"Campaign: {args.max_trials} candidates, seed {args.seed}, {len(syms)} symbols...")
-    counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry())
+    print(f"Campaign: {args.max_trials} candidates, seed {args.seed}, {len(syms)} symbols, "
+          f"workers {args.workers}...")
+    if args.workers > 1:                 # process-parallel; byte-identical to serial
+        from maker.parallel_campaign import run_campaign_parallel
+        counts = run_campaign_parallel(args.max_trials, args.seed, candles, cfg, _registry(),
+                                       workers=args.workers)
+    else:
+        from maker.campaign import run_campaign
+        counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry())
     print("counts:", counts)
     return 0
 
@@ -60,6 +67,8 @@ def main(argv=None) -> int:
     g.add_argument("--max-trials", type=int, default=50)
     g.add_argument("--seed", type=int, default=0)
     g.add_argument("--symbols", type=int, default=60)
+    g.add_argument("--workers", type=int, default=1,
+                   help="process-parallel workers (>1 runs the pool; identical results)")
     for name in ("screen", "gauntlet", "reserve"):
         sub.add_parser(name)
     args = ap.parse_args(argv)
