@@ -30,7 +30,9 @@ def family_id(candidate: Candidate) -> str:
 
 class Registry:
     def __init__(self, path: str = "data_cache/maker_trials.db"):
-        self._conn = sqlite3.connect(path)
+        # check_same_thread=False so the single-writer thread (maker.writer) may own the
+        # connection; access is serialized through that one writer, so this is safe.
+        self._conn = sqlite3.connect(path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._init()
 
