@@ -53,6 +53,22 @@ def _prepare_cfg(candidate, cfg: dict) -> dict:
     return c
 
 
+def staged_screen(candidate, candles: dict, cfg: dict, subset: list, window: int = 160,
+                  thresholds: dict = DEFAULTS, min_precheck_trades: int = 10):
+    """Stage 0: a trade-count pre-check on a small representative subset. A candidate
+    that can't produce even a handful of trades there won't on the full universe — kill
+    it before the full store is touched (section 16.3). Survivors go to the full screen."""
+    subset_candles = {s: candles[s] for s in subset if s in candles}
+    if subset_candles:
+        _, _, m0 = screen_candidate(candidate, subset_candles, cfg, window=window,
+                                    thresholds=thresholds)
+        if m0["trades"] < min_precheck_trades:
+            return False, "precheck_too_few_trades", {"stage": "precheck", **m0}
+    passed, reason, m = screen_candidate(candidate, candles, cfg, window=window,
+                                         thresholds=thresholds)
+    return passed, reason, {"stage": "full", **m}
+
+
 def screen_candidate(candidate, candles: dict, cfg: dict, window: int = 160,
                      thresholds: dict = DEFAULTS) -> tuple[bool, str, dict]:
     """Compile, run one in-sample backtest, apply the kill logic. Registers the

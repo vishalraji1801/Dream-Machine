@@ -16,7 +16,10 @@ from maker.screen import screen_candidate
 
 
 def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
-                 lock: dict = None, product: str = "delivery", window: int = 160) -> dict:
+                 lock: dict = None, product: str = "delivery", window: int = 160,
+                 time_budget_s: float = None) -> dict:
+    import time
+    started = time.time()
     rng = random.Random(seed)
     counts = {"generated": 0, "gen_reject": 0, "screened": 0, "screen_fail": 0,
               "gauntlet_run": 0, "gauntlet_fail": 0, "reserve_run": 0, "alive": 0}
@@ -30,6 +33,12 @@ def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
 
     long_only = product.lower() in ("delivery", "cnc")
     for _ in range(n):
+        # budget guard: stop cleanly. Each candidate below is processed atomically —
+        # it gets a terminal trial row before the loop continues — so an interrupted
+        # campaign never leaves a trial without a terminal status (section 16.7).
+        if time_budget_s is not None and (time.time() - started) > time_budget_s:
+            counts["stopped_on_budget"] = True
+            break
         cand = random_candidate(rng, direction="long" if long_only else rng.choice(["long", "short"]))
         counts["generated"] += 1
         fam = family_id(cand)
