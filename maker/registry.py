@@ -88,3 +88,42 @@ class Registry:
 
     def close(self):
         self._conn.close()
+
+
+# ── prior-campaign seeds (section 11.4) — the bar must remember past search ────
+# Swing: the 19-strategy campaign, each strategy = one family, status per the broad
+# 202-name retest. Intraday: 14 strategies x 4 timeframes = 56 FAILED families, so
+# N_effective(intraday) starts at 56 and the intraday bar starts ~pf_required(56)~1.31.
+_SWING_PRIOR = {
+    "donchian_trend_tsl": True, "volatility_contraction_breakout": True,
+    "double_reversal": True, "bb_mean_reversion": True, "index_dip_reversion": True,
+    "abcd_pattern": True, "dip_buy_momentum": True, "head_shoulders": True,
+    "ma_pullback": False, "fair_value_gap": False, "trendline_bounce": False,
+    "inside_bar_breakout": False, "rsi_reversion": False, "engulfing_macd": False,
+    "supertrend": False, "orb_nifty": False, "red_to_green_vwap": False,
+    "vwap_break_short": False, "vwap_squeeze": False,
+}
+_INTRADAY_PRIOR_STRATS = [
+    "supertrend", "orb_nifty", "volatility_contraction_breakout", "rsi_reversion",
+    "engulfing_macd", "inside_bar_breakout", "red_to_green_vwap", "vwap_break_short",
+    "vwap_squeeze", "ma_pullback", "fair_value_gap", "trendline_bounce",
+    "abcd_pattern", "head_shoulders"]
+_INTRADAY_PRIOR_TFS = ["5m", "15m", "30m", "60m"]
+
+
+def _seed_family(prefix: str, key: str) -> str:
+    return prefix + hashlib.sha256(key.encode()).hexdigest()[:10]
+
+
+def seed_registry(reg: Registry) -> dict:
+    """Seed both sleeves with the pre-maker campaign so the bar remembers past search."""
+    for name, passed in _SWING_PRIOR.items():
+        reg.record(cid="seed:" + name, family=_seed_family("sw_", name), stage="SCREEN",
+                   status="PASS" if passed else "FAIL", sleeve="swing",
+                   notes="pre-maker swing campaign (broad 202-name retest)")
+    for strat in _INTRADAY_PRIOR_STRATS:
+        for tf in _INTRADAY_PRIOR_TFS:
+            reg.record(cid=f"seed:{strat}:{tf}", family=_seed_family("id_", strat + tf),
+                       stage="SCREEN", status="FAIL", sleeve="intraday",
+                       notes="pre-maker intraday campaign (14x4TF, all failed OOS)")
+    return {"swing": reg.n_effective("swing"), "intraday": reg.n_effective("intraday")}
