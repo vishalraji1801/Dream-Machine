@@ -27,6 +27,7 @@ _PASSTHROUGH = {
     "validate": "validate.py",
     "sweep": "sweep.py",
     "tune": "autotune.py",
+    "make": "make.py",
 }
 
 
