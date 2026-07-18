@@ -38,6 +38,21 @@ def _metrics(res) -> dict:
             "rank": round(pf * math.log(max(trades, 1)), 3)}
 
 
+def _prepare_cfg(candidate, cfg: dict) -> dict:
+    """Sleeve-aware backtest cfg for a candidate. Swing (CNC) is long-only; intraday
+    (MIS) keeps both sides AND applies 0.10% execution slippage IN THE SCREEN — prior
+    evidence says slippage is where intraday dies, so test it first, not last."""
+    c = copy.deepcopy(cfg)
+    c.setdefault("strategy", {})["name"] = candidate.cid
+    product = str(getattr(candidate, "product", None)
+                  or c.get("costs", {}).get("product", "delivery")).lower()
+    c.setdefault("costs", {})["product"] = product
+    c["strategy"]["long_only"] = product in ("delivery", "cnc")
+    if product in ("intraday", "mis"):
+        c.setdefault("backtest", {})["exec_slippage_pct"] = 0.10
+    return c
+
+
 def screen_candidate(candidate, candles: dict, cfg: dict, window: int = 160,
                      thresholds: dict = DEFAULTS) -> tuple[bool, str, dict]:
     """Compile, run one in-sample backtest, apply the kill logic. Registers the
@@ -47,13 +62,7 @@ def screen_candidate(candidate, candles: dict, cfg: dict, window: int = 160,
     fn = compile(candidate)
     STRATEGY_REGISTRY[candidate.cid] = fn
     try:
-        c = copy.deepcopy(cfg)
-        c.setdefault("strategy", {})["name"] = candidate.cid
-        # long_only applies to SWING (CNC can't hold shorts overnight); intraday (MIS)
-        # may short and square off, so it keeps both sides.
-        product = str(c.get("costs", {}).get("product", "delivery")).lower()
-        c["strategy"]["long_only"] = product in ("delivery", "cnc")
-        res = Backtester(c, window=window).run(candles)
+        res = Backtester(_prepare_cfg(candidate, cfg), window=window).run(candles)
     finally:
         STRATEGY_REGISTRY.pop(candidate.cid, None)
     m = _metrics(res)

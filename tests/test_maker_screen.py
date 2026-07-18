@@ -55,3 +55,23 @@ def test_screen_candidate_runs_end_to_end():
     passed, reason, m = screen_candidate(cand, candles, cfg, window=120)
     assert isinstance(passed, bool)
     assert set(m) == {"trades", "pf", "net", "top3_frac", "rank"}
+
+
+def test_screen_applies_slippage_for_intraday_only():
+    from maker.screen import _prepare_cfg
+    from maker.grammar import make_candidate
+    intraday = make_candidate("long", {
+        "setup": ("opening_range", {"window_min": 15, "break_side": "high"}),
+        "trigger": ("candle_confirm_1m", {"accept": ("hammer_white", "doji"), "above_vwap": True}),
+        "exit": ("r_multiple", {"r": 2}),
+        "hold": ("square_off", {"at": "15:10"})}, sleeve="intraday")
+    swing = make_candidate("long", {
+        "setup": ("nday_extreme", {"lookback": 100, "side": "high"}),
+        "trigger": ("breakout_close", {"of": "setup_level"}),
+        "exit": ("atr_trail", {"mult": 5, "period": 14})}, sleeve="swing")
+    ci = _prepare_cfg(intraday, {"costs": {}})
+    cs = _prepare_cfg(swing, {"costs": {}})
+    assert ci["backtest"]["exec_slippage_pct"] == 0.10          # slippage in the screen
+    assert ci["strategy"]["long_only"] is False                 # intraday keeps shorts
+    assert "exec_slippage_pct" not in cs.get("backtest", {})    # swing screen: no slippage
+    assert cs["strategy"]["long_only"] is True
