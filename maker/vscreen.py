@@ -29,6 +29,7 @@ def vectorized_breakout_pf(df: pd.DataFrame, lookback: int, r_mult: float,
     roll_max = pd.Series(close).rolling(lookback).max().values
 
     wins = losses = 0.0
+    outcomes = []                                                # per-trade P&L (price points)
     i = lookback
     while i < n - 1:
         if not np.isnan(roll_max[i]) and close[i] >= roll_max[i] and a[i] > 0:
@@ -46,6 +47,7 @@ def vectorized_breakout_pf(df: pd.DataFrame, lookback: int, r_mult: float,
                     break
             if outcome is None:
                 outcome = close[n - 1] - entry
+            outcomes.append(outcome)
             if outcome > 0:
                 wins += outcome
             else:
@@ -54,7 +56,34 @@ def vectorized_breakout_pf(df: pd.DataFrame, lookback: int, r_mult: float,
         else:
             i += 1
     pf = (wins / losses) if losses > 0 else (3.0 if wins > 0 else 0.0)
-    return {"pf": round(pf, 3), "wins": round(wins, 2), "losses": round(losses, 2)}
+    return {"pf": round(pf, 3), "wins": round(wins, 2), "losses": round(losses, 2),
+            "trades": len(outcomes), "outcomes": outcomes}
+
+
+def vectorized_screen_metrics(candles: dict, lookback: int, r_mult: float,
+                              slippage_pct: float = 0.10) -> dict:
+    """Aggregate the conservative vectorized breakout across every symbol into the SAME
+    metrics shape maker.screen._metrics produces, so screen_decision can consume it
+    unchanged. Pooling trades across the universe matches how the event-driven screen
+    counts them. PF stays conservative per symbol (test 24), hence conservative pooled."""
+    import math
+
+    outcomes = []
+    for df in candles.values():
+        r = vectorized_breakout_pf(df, lookback=lookback, r_mult=r_mult,
+                                   slippage_pct=slippage_pct)
+        outcomes.extend(r["outcomes"])
+
+    trades = len(outcomes)
+    net = sum(outcomes)
+    wins = sum(o for o in outcomes if o > 0)
+    losses = -sum(o for o in outcomes if o < 0)
+    pf = (wins / losses) if losses > 0 else (3.0 if wins > 0 else 0.0)
+    top3 = sum(sorted(outcomes, reverse=True)[:3])
+    top3_frac = (top3 / net) if net > 0 else 1.0
+    return {"trades": trades, "pf": round(min(pf, 3.0), 3), "net": round(net, 2),
+            "top3_frac": round(top3_frac, 3),
+            "rank": round(min(pf, 3.0) * math.log(max(trades, 1)), 3)}
 
 
 def assert_conservative(vectorized_pf: float, replay_pf: float) -> bool:

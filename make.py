@@ -47,7 +47,7 @@ def cmd_generate(args) -> int:
         return 1
     candles = {s: store.get_candles(s, "day") for s in syms}
     print(f"Campaign: {args.max_trials} candidates, seed {args.seed}, {len(syms)} symbols...")
-    counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry(), window=160)
+    counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry())
     print("counts:", counts)
     return 0
 

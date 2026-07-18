@@ -13,6 +13,12 @@ from maker.grammar import compile
 
 DEFAULTS = {"min_trades": 30, "min_pf": 1.1, "top3_max_frac": 0.60}
 
+# The compiled candidate fn (grammar.compile) needs >=210 bars of warmup (200-period
+# SMA/lookback blocks) or it holds forever. The backtester feeds it a rolling window of
+# exactly this many bars, so the maker's screen/gauntlet/reserve MUST run >= that floor —
+# below it every candidate produces 0 trades and the whole funnel is silently dead.
+WINDOW = 220
+
 
 def screen_decision(m: dict, thresholds: dict = DEFAULTS) -> tuple[bool, str]:
     """Pure kill logic over computed metrics — the auditable core of the screen."""
@@ -53,7 +59,7 @@ def _prepare_cfg(candidate, cfg: dict) -> dict:
     return c
 
 
-def staged_screen(candidate, candles: dict, cfg: dict, subset: list, window: int = 160,
+def staged_screen(candidate, candles: dict, cfg: dict, subset: list, window: int = WINDOW,
                   thresholds: dict = DEFAULTS, min_precheck_trades: int = 10):
     """Stage 0: a trade-count pre-check on a small representative subset. A candidate
     that can't produce even a handful of trades there won't on the full universe — kill
@@ -69,7 +75,7 @@ def staged_screen(candidate, candles: dict, cfg: dict, subset: list, window: int
     return passed, reason, {"stage": "full", **m}
 
 
-def screen_candidate(candidate, candles: dict, cfg: dict, window: int = 160,
+def screen_candidate(candidate, candles: dict, cfg: dict, window: int = WINDOW,
                      thresholds: dict = DEFAULTS) -> tuple[bool, str, dict]:
     """Compile, run one in-sample backtest, apply the kill logic. Registers the
     compiled fn under the cid only for the duration of the run."""
@@ -84,3 +90,42 @@ def screen_candidate(candidate, candles: dict, cfg: dict, window: int = 160,
     m = _metrics(res)
     passed, reason = screen_decision(m, thresholds)
     return passed, reason, m
+
+
+def _vectorizable(candidate) -> dict:
+    """Return {lookback, r_mult} if the candidate is the numpy-vectorizable breakout
+    family (long, no regime gate, nday_extreme-high -> breakout_close -> r_multiple),
+    else None. Only this shape has a proven conservative vectorized path (vscreen)."""
+    if candidate.direction != "long":
+        return None
+    if candidate.blocks.get("regime") is not None:        # vscreen models no regime gate
+        return None
+    setup = candidate.blocks.get("setup")
+    trigger = candidate.blocks.get("trigger")
+    exit_b = candidate.blocks.get("exit")
+    if not (setup and trigger and exit_b):
+        return None
+    if setup.name != "nday_extreme" or setup.params.get("side") != "high":
+        return None
+    if trigger.name != "breakout_close" or exit_b.name != "r_multiple":
+        return None
+    return {"lookback": setup.params["lookback"], "r_mult": exit_b.params["r"]}
+
+
+def fast_screen_candidate(candidate, candles: dict, cfg: dict, window: int = WINDOW,
+                          thresholds: dict = DEFAULTS) -> tuple[bool, str, dict]:
+    """Screen dispatcher: use the conservative numpy screen for the vectorizable
+    breakout family, fall back to the event-driven screen for everything else.
+
+    Sound because the gauntlet — not the screen — is the real gate (it re-tests every
+    survivor with honest event-driven replay, OOS, at the rising bar). vscreen's proven
+    conservatism (vec_pf <= replay_pf, test 24) means a vectorized PASS never *flatters*
+    the honest edge, so the worst case is a handful of extra gauntlet runs, never a
+    false edge admitted to the reserve. Reject-side recall loss is the accepted trade."""
+    vec = _vectorizable(candidate)
+    if vec is None:
+        return screen_candidate(candidate, candles, cfg, window=window, thresholds=thresholds)
+    from maker.vscreen import vectorized_screen_metrics
+    m = vectorized_screen_metrics(candles, vec["lookback"], vec["r_mult"])
+    passed, reason = screen_decision(m, thresholds)
+    return passed, ("vec:" + reason), m

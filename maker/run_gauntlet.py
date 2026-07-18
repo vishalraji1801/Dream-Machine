@@ -15,7 +15,7 @@ import itertools
 from maker.bar import pf_required
 from maker.blocks import BLOCKS
 from maker.grammar import make_candidate
-from maker.screen import screen_candidate
+from maker.screen import WINDOW, screen_candidate
 
 MIN_TRADES = 20
 PLATEAU_MIN_PF = 1.2
@@ -57,7 +57,7 @@ def _time_split(candles: dict, frac: float = 0.7):
 
 
 def run_gauntlet(candidate, candles: dict, cfg: dict, registry, family: str,
-                 n_effective: int, window: int = 160) -> tuple[bool, object, dict]:
+                 n_effective: int, window: int = WINDOW) -> tuple[bool, object, dict]:
     bar = pf_required(n_effective)
     ins, oos = _time_split(candles)
     vs = variants(candidate)

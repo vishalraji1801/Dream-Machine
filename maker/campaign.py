@@ -12,13 +12,14 @@ from maker import constraints
 from maker.generate import random_candidate
 from maker.registry import family_id
 from maker.run_gauntlet import run_gauntlet
-from maker.screen import screen_candidate
+from maker.screen import WINDOW, fast_screen_candidate
 
 
 def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
-                 lock: dict = None, product: str = "delivery", window: int = 160,
+                 lock: dict = None, product: str = "delivery", window: int = None,
                  time_budget_s: float = None) -> dict:
     import time
+    window = WINDOW if window is None else window
     started = time.time()
     rng = random.Random(seed)
     counts = {"generated": 0, "gen_reject": 0, "screened": 0, "screen_fail": 0,
@@ -50,7 +51,7 @@ def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
             counts["gen_reject"] += 1
             continue
 
-        passed, sreason, m = screen_candidate(cand, screen_cs, cfg, window=window)
+        passed, sreason, m = fast_screen_candidate(cand, screen_cs, cfg, window=window)
         registry.record(cand.cid, fam, "SCREEN", "PASS" if passed else "FAIL",
                         metrics=m, notes=sreason)
         counts["screened"] += 1
