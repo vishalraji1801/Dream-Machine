@@ -139,6 +139,12 @@ def _regime_ok(name, params, df):
         if pct is None:
             return False
         return pct < params["below"] if "below" in params else pct > params["above"]
+    if name == "adx_band":
+        from indicators.core import adx
+        val = adx(df, 14).iloc[-1]
+        if val != val:                         # NaN during warmup
+            return False
+        return params["min"] <= float(val) <= params["max"]
     raise NotImplementedError(f"regime block {name!r} not implemented yet")
 
 
@@ -171,6 +177,22 @@ def _setup_level(name, params, df):
             return last
         if params["side"] == "upper" and last > upper:
             return last
+        return None
+    if name == "objective_level":
+        # Objective S/R the whole market watches — no detection params, so it cannot be
+        # curve-fit (section 15, tier-1). Returns the level; the trigger decides the break.
+        if len(df) < 2:
+            return None
+        lvl = params["level"]
+        if lvl == "pdh":
+            return float(df["high"].iloc[-2])          # prior bar's high
+        if lvl == "pdl":
+            return float(df["low"].iloc[-2])
+        if lvl == "pdc":
+            return float(df["close"].iloc[-2])
+        if lvl == "round":                             # nearest psychological round number
+            step = 10 if last < 100 else 50 if last < 1000 else 100 if last < 5000 else 500
+            return round(last / step) * float(step)
         return None
     raise NotImplementedError(f"setup block {name!r} not implemented yet")
 

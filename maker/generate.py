@@ -12,8 +12,8 @@ from maker.grammar import make_candidate
 
 # blocks with a working evaluator in grammar.compile (expanded as indicators land)
 IMPLEMENTED = {
-    "regime": ["trend_side", "bb_width_pctile"],
-    "setup": ["nday_extreme", "compression", "band_touch"],
+    "regime": ["trend_side", "bb_width_pctile", "adx_band"],
+    "setup": ["nday_extreme", "compression", "band_touch", "objective_level"],
     "trigger": ["breakout_close", "limit_below", "resume_new_high"],
     "exit": ["atr_trail", "r_multiple", "opposite_band"],
 }
@@ -23,6 +23,10 @@ def _sample_block(rng: random.Random, block) -> dict:
     if block.name == "bb_width_pctile":                  # uses exactly ONE side
         side = rng.choice(["below", "above"])
         return {side: rng.choice(block.params[side])}
+    if block.name == "adx_band":                         # draw a VALID band (min < max)
+        lo = rng.choice(block.params["min"])
+        hi = rng.choice([v for v in block.params["max"] if v > lo])
+        return {"min": lo, "max": hi}
     return {p: rng.choice(vals) for p, vals in block.params.items()}
 
 
