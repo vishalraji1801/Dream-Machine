@@ -56,8 +56,15 @@ def estimate_edge_pct(candidate: Candidate, product: str) -> float:
     return atrp
 
 
+# Intraday "stocks-in-play / session-specific" blocks. An intraday candidate WITHOUT
+# at least one of these sits in the already-falsified fixed-list/all-day/large-cap
+# territory (the prior 56 failures) and is rejected unless explicitly overridden.
+_STOCKS_IN_PLAY = {"time_window", "skip_open_minutes", "rvol_gate", "scanner_rank"}
+
+
 def check(candidate: Candidate, product: str = None, seen_cids=(),
-          cost_multiple_min: float = 3.0) -> tuple[bool, str, dict]:
+          cost_multiple_min: float = 3.0,
+          allow_falsified_region: bool = False) -> tuple[bool, str, dict]:
     """Return (ok, reason, detail). reason is 'ok' when it passes; otherwise a
     GEN_REJECT code with the supporting math in detail (recorded on the trial row).
     product defaults to the candidate's own (swing->delivery, intraday->intraday)."""
@@ -69,6 +76,12 @@ def check(candidate: Candidate, product: str = None, seen_cids=(),
         return False, "short_on_cnc", {"direction": candidate.direction, "product": product}
     if candidate.cid in set(seen_cids):
         return False, "duplicate", {"cid": candidate.cid}
+    if candidate.sleeve == "intraday" and not allow_falsified_region:
+        used = {bi.name for bi in candidate.blocks.values()}
+        if not (used & _STOCKS_IN_PLAY):
+            return False, "prior_falsified_region", {
+                "note": "fixed-list/all-day/large-cap intraday is a proven cost sink; "
+                        "add a session/rvol/scanner block or pass an override"}
     rt = round_trip_cost_pct(product)
     eff = effective_cost_pct(product)                    # intraday folds in slippage
     required = cost_multiple_min * eff

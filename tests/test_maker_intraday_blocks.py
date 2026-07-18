@@ -45,8 +45,9 @@ def test_intraday_turnover_budget_includes_slippage():         # test 12
     assert effective_cost_pct("intraday") > round_trip_cost_pct("intraday")   # slippage folded in
     assert effective_cost_pct("delivery") == round_trip_cost_pct("delivery")  # swing: no add
     # force the reject and prove the slippage-inclusive cost math is on the trial row
+    # (override the falsified-region guard so we reach the turnover check)
     c = _intraday(hold=("square_off", {"at": "15:10"}))
-    ok, reason, detail = check(c, cost_multiple_min=20.0)
+    ok, reason, detail = check(c, cost_multiple_min=20.0, allow_falsified_region=True)
     assert not ok and reason == "turnover_budget"
     assert detail["effective_cost_pct"] > detail["round_trip_cost_pct"]
     assert abs(detail["required_gross_pct"] - 20.0 * detail["effective_cost_pct"]) < 0.02
