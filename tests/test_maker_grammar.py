@@ -17,8 +17,8 @@ def _uptrend(n=260):
 
 
 def _donchian_like(**over):
+    # within the parsimony budget: 2 conditions, 4 tunable params (period:[14] is fixed)
     blocks = {
-        "regime": ("trend_side", {"ma": 200, "side": "above"}),
         "setup": ("nday_extreme", {"lookback": 100, "side": "high"}),
         "trigger": ("breakout_close", {"of": "setup_level"}),
         "exit": ("atr_trail", {"mult": 5, "period": 14}),
@@ -37,8 +37,23 @@ def test_cid_is_stable_and_sensitive():
 
 def test_condition_and_param_counts():
     a = _donchian_like()
-    assert a.n_conditions == 3                              # regime + setup + trigger
-    assert a.n_params == 2 + 2 + 1 + 2                      # ma/side, lookback/side, of, mult/period
+    assert a.n_conditions == 2                              # setup + trigger
+    assert a.n_params == 2 + 1 + 1                          # lookback/side, of, mult (period fixed)
+
+
+def test_parsimony_over_budget_is_impossible(  ):
+    # adding a regime block pushes tunable params past 4 -> unconstructible (RULE 3)
+    with pytest.raises(ValueError):
+        _donchian_like(regime=("trend_side", {"ma": 200, "side": "above"}))
+    # 4 condition blocks is also impossible (max 3)
+    with pytest.raises(ValueError):
+        make_candidate("long", {
+            "regime": ("trend_side", {"ma": 200, "side": "above"}),
+            "setup": ("nday_extreme", {"lookback": 100, "side": "high"}),
+            "trigger": ("breakout_close", {"of": "setup_level"}),
+            "exit": ("r_multiple", {"r": 2}),
+            "hold": ("time_stop", {"max_days": 20}),
+        })  # 5 tunable params anyway
 
 
 def test_params_validated_against_grid():

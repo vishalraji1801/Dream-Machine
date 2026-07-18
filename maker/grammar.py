@@ -66,8 +66,15 @@ def make_candidate(direction: str, blocks: dict) -> Candidate:
             if p not in b.params or v not in b.params[p]:
                 raise ValueError(f"{name}.{p}={v!r} not in grid {b.params.get(p)}")
         inst[slot] = BlockInstance(name, dict(params))
-        n_params += len(params)
+        # a param counts against the budget only if it is genuinely TUNABLE — i.e. its
+        # grid offers more than one value. A single-value grid (e.g. period:[14]) is
+        # fixed structure, not a knob.
+        n_params += sum(1 for p in params if len(b.params[p]) > 1)
     n_conditions = sum(1 for slot in inst if slot in CONDITION_SLOTS)
+    if n_conditions > 3:
+        raise ValueError(f"parsimony (RULE 3): {n_conditions} condition blocks > 3")
+    if n_params > 4:
+        raise ValueError(f"parsimony (RULE 3): {n_params} tunable params > 4")
     rationale = " ".join(BLOCKS[bi.name].rationale for bi in inst.values())
     return Candidate(_cid(direction, inst), direction, inst, n_conditions, n_params, rationale)
 
