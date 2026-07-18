@@ -82,7 +82,7 @@ def test_determinism_same_cid_same_data(  ):
 
 
 def test_compiled_fn_is_pure_no_io_or_clock():
-    src = (pathlib.Path("maker/grammar.py").read_text()
-           + pathlib.Path("maker/blocks.py").read_text())
+    src = (pathlib.Path("maker/grammar.py").read_text(encoding="utf-8")
+           + pathlib.Path("maker/blocks.py").read_text(encoding="utf-8"))
     for forbidden in ("import requests", "kiteconnect", "datetime.now(", "urllib", "socket."):
         assert forbidden not in src, f"grammar must be pure: found {forbidden!r}"

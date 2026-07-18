@@ -74,11 +74,20 @@ def make_candidate(direction: str, blocks: dict, sleeve: str = "swing",
         raise ValueError(f"bad sleeve {sleeve!r}")
     timeframe = timeframe or default_timeframe(sleeve)
     product = product_for_sleeve(sleeve)
+    # intraday MUST carry the square_off hold block (hard MIS exit) — same
+    # unconstructible-if-absent enforcement as parsimony (section 11.3).
+    if sleeve == "intraday":
+        hold = blocks.get("hold")
+        if not hold or hold[0] != "square_off":
+            raise ValueError("intraday candidates must include the square_off hold block")
+
     inst, n_params = {}, 0
     for slot, (name, params) in blocks.items():
         b = BLOCKS[name]
         if b.slot != slot:
             raise ValueError(f"block {name!r} is slot {b.slot!r}, not {slot!r}")
+        if sleeve not in b.sleeves:
+            raise ValueError(f"block {name!r} is not valid for sleeve {sleeve!r}")
         for p, v in params.items():
             if p not in b.params or v not in b.params[p]:
                 raise ValueError(f"{name}.{p}={v!r} not in grid {b.params.get(p)}")

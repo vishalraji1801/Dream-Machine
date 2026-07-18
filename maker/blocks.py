@@ -19,6 +19,7 @@ class Block:
     name: str
     params: dict          # param_name -> list of allowed values (the ONLY values used)
     rationale: str        # one-sentence economic story (required, non-empty)
+    sleeves: tuple = ("swing", "intraday")   # which sleeves may use this block
 
     def __post_init__(self):
         if self.slot not in SLOTS:
@@ -30,8 +31,11 @@ class Block:
             raise ValueError(f"block {self.name!r} declares no parameter grid")
 
 
-def _b(slot, name, params, rationale):
-    return Block(slot, name, params, rationale)
+def _b(slot, name, params, rationale, sleeves=("swing", "intraday")):
+    return Block(slot, name, params, rationale, sleeves)
+
+
+_IN = ("intraday",)
 
 
 _LIBRARY = [
@@ -91,16 +95,50 @@ _LIBRARY = [
     _b("hold", "min_expected_hold", {"min_days": [3, 5]},
        "A minimum expected hold enforces the turnover budget so delivery costs are "
        "amortized over enough move."),
+
+    # ═══ INTRADAY JARS (section 11.2) — intraday sleeve only ══════════════════
+    # regime (session / stocks-in-play filters)
+    _b("regime", "time_window", {"allow": [("09:30", "11:00"), ("11:00", "14:00"),
+                                           ("14:00", "15:00")]},
+       "Intraday edges are often session-specific; the open behaves differently from midday.", _IN),
+    _b("regime", "skip_open_minutes", {"min": [0, 15, 30]},
+       "Skipping the first minutes avoids the noisiest, widest-spread part of the session.", _IN),
+    _b("regime", "rvol_gate", {"min": [1.5, 3, 5]},
+       "Relative volume finds stocks-in-play where intraday moves are large enough to pay.", _IN),
+    _b("regime", "scanner_rank", {"top_n": [10, 30]},
+       "Trading only scanner-selected names focuses on the day's movers, not a fixed list.", _IN),
+    # setup
+    _b("setup", "opening_range", {"window_min": [5, 15, 30],
+                                  "break_side": ["high", "low", "gap_aligned"]},
+       "The opening range frames the day; its break is the most cross-validated intraday setup.", _IN),
+    _b("setup", "vwap_relation", {"state": ["reclaim", "break_below", "hold_above"],
+                                  "min_dist_pct": [0, 0.3]},
+       "VWAP is intraday fair value; reclaims and rejections mark shifts in intraday control.", _IN),
+    _b("setup", "intraday_flush", {"down_pct_in_min": [(2, 15), (3, 30)]},
+       "A fast intraday flush in a strong name is a liquidity-vacuum overreaction that snaps back.", _IN),
+    _b("setup", "prior_day_level", {"level": ["pdh", "pdl", "pdc"], "action": ["break", "reject"]},
+       "Prior-day high/low/close are objective levels the whole market watches intraday.", _IN),
+    # trigger
+    _b("trigger", "candle_confirm_1m", {"accept": [("hammer_white", "doji")], "above_vwap": [True]},
+       "A 1-min confirmation candle above VWAP demands buyers show up before intraday entry.", _IN),
+    _b("trigger", "new_extreme_after_pullback", {"pullback_bars": [1, 2, 3]},
+       "A new extreme after a shallow pullback confirms intraday momentum resumed.", _IN),
+    # hold (square_off is MANDATORY for intraday)
+    _b("hold", "square_off", {"at": ["15:10"]},
+       "MIS positions must close before the exchange auto-square-off; a hard time exit is mandatory.", _IN),
+    _b("hold", "max_hold_min", {"max": [30, 60, 120]},
+       "A max intraday hold caps time-decay of an idea and forces capital recycling.", _IN),
 ]
 
 BLOCKS = {b.name: b for b in _LIBRARY}
 
 
-def blocks_for_slot(slot: str) -> list:
-    """All blocks in a slot (spec section 1)."""
+def blocks_for_slot(slot: str, sleeve: str = None) -> list:
+    """Blocks in a slot, optionally filtered to those valid for a sleeve (section 1/11.2)."""
     if slot not in SLOTS:
         raise ValueError(f"unknown slot {slot!r}")
-    return [b for b in _LIBRARY if b.slot == slot]
+    return [b for b in _LIBRARY if b.slot == slot
+            and (sleeve is None or sleeve in b.sleeves)]
 
 
 def get_block(name: str) -> Block:

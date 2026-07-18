@@ -19,12 +19,24 @@ from maker.grammar import Candidate
 _NOMINAL_ATR_PCT = {"delivery": 2.0, "cnc": 2.0, "intraday": 0.5, "mis": 0.5}
 
 
+_INTRADAY_SLIPPAGE_PCT = 0.10          # slippage is where intraday dies (section 11.3)
+
+
 def round_trip_cost_pct(product: str) -> float:
     """Round-trip charges as a % of one leg's value, from the real cost model."""
     from src.costs import estimate_costs
     leg = 100000.0
     cost = estimate_costs(leg, leg, {"costs": {"product": product}})
     return cost / leg * 100.0
+
+
+def effective_cost_pct(product: str) -> float:
+    """Cost the turnover budget must clear. Intraday adds slippage up front (0.08%
+    cost + 0.10% slippage -> ~0.18%), so the required gross is ~0.54% at 3x."""
+    rt = round_trip_cost_pct(product)
+    if product.lower() in ("intraday", "mis"):
+        return rt + _INTRADAY_SLIPPAGE_PCT
+    return rt
 
 
 def estimate_edge_pct(candidate: Candidate, product: str) -> float:
@@ -58,9 +70,11 @@ def check(candidate: Candidate, product: str = None, seen_cids=(),
     if candidate.cid in set(seen_cids):
         return False, "duplicate", {"cid": candidate.cid}
     rt = round_trip_cost_pct(product)
-    required = cost_multiple_min * rt
+    eff = effective_cost_pct(product)                    # intraday folds in slippage
+    required = cost_multiple_min * eff
     edge = estimate_edge_pct(candidate, product)
     detail = {"round_trip_cost_pct": round(rt, 3),
+              "effective_cost_pct": round(eff, 3),
               "required_gross_pct": round(required, 3),
               "est_edge_pct": round(edge, 3),
               "cost_multiple_min": cost_multiple_min}
