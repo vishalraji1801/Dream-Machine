@@ -42,10 +42,19 @@ def load_lock(path: str = "data_cache/reserve_lock.json") -> dict:
         return json.load(f)
 
 
+def _ts_naive(df: pd.DataFrame) -> pd.Series:
+    """Timestamps as tz-naive datetimes. Real store bars are tz-aware (IST, +05:30);
+    the cutoff is a plain date — strip the tz so the comparison is valid and date-based."""
+    ts = pd.to_datetime(df["timestamp"])
+    if getattr(ts.dt, "tz", None) is not None:
+        ts = ts.dt.tz_localize(None)
+    return ts
+
+
 def screen_candles(df: pd.DataFrame, lock: dict) -> pd.DataFrame:
     """Data strictly BEFORE the cutoff — the ONLY data screen/gauntlet may read."""
     cutoff = pd.to_datetime(lock["cutoff_date"])
-    return df[pd.to_datetime(df["timestamp"]) < cutoff].reset_index(drop=True)
+    return df[_ts_naive(df) < cutoff].reset_index(drop=True)
 
 
 def reserve_candles(df: pd.DataFrame, lock: dict) -> pd.DataFrame:
@@ -54,7 +63,7 @@ def reserve_candles(df: pd.DataFrame, lock: dict) -> pd.DataFrame:
         raise PermissionError(
             "reserve data may only be read inside reserve.evaluate_once (RULE 2)")
     cutoff = pd.to_datetime(lock["cutoff_date"])
-    return df[pd.to_datetime(df["timestamp"]) >= cutoff].reset_index(drop=True)
+    return df[_ts_naive(df) >= cutoff].reset_index(drop=True)
 
 
 def _default_evaluator(candidate, reserve_by_symbol: dict, cfg: dict) -> dict:
