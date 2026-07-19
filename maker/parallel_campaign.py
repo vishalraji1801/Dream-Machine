@@ -101,57 +101,63 @@ def run_campaign_parallel(n: int, seed: int, candles: dict, cfg: dict, registry,
         fams_evaluated.add(fam)                                   # this candidate reaches SCREEN
         plan.append((k, cand, fam, None, len(fams_evaluated)))    # bar = live N_effective
 
-    # 4a: farm the expensive screen+gauntlet across the pool (workers are read-only)
-    tasks = [(k, cand, bar) for (k, cand, fam, rej, bar) in plan if rej is None]
-    if time_budget_s is not None:                                 # best-effort budget guard
-        tasks = tasks[:_within_budget_count(tasks, started, time_budget_s)]
-    results = {}
+    # how many screen-bound candidates to actually run (budget truncates the tail; a
+    # prefix, so recording order and determinism are preserved). Budget is best-effort:
+    # once already over budget at fan-out time, submit nothing further.
+    import time
+    n_screen_bound = sum(1 for (_, _, _, rej, _) in plan if rej is None)
+    to_run = n_screen_bound
+    if time_budget_s is not None and (time.time() - started) > time_budget_s:
+        to_run = 0
+
+    # 4: farm the expensive screen+gauntlet across the pool, but RECORD INCREMENTALLY as
+    # ordered results stream back — so a killed 14-hour run keeps every finished trial
+    # (RULE 1: one writer, insertion order). ex.map yields in submission order == plan
+    # order of screen-bound candidates, so we consume it in lockstep with the plan walk.
+    from maker.reserve import evaluate_once
+
+    def _record_all(result_iter):
+        seen_run = 0
+        for (k, cand, fam, rej, bar) in plan:
+            if rej is not None:
+                reason, detail = rej
+                registry.record(cand.cid, fam, "GEN_REJECT", "FAIL", metrics=detail,
+                                notes=reason)
+                counts["gen_reject"] += 1
+                continue
+            if seen_run >= to_run:                               # dropped by budget
+                counts["stopped_on_budget"] = True
+                continue
+            r = next(result_iter)
+            seen_run += 1
+            passed, sreason, m = r["screen"]
+            registry.record(cand.cid, fam, "SCREEN", "PASS" if passed else "FAIL",
+                            metrics=m, notes=sreason)
+            counts["screened"] += 1
+            if not passed:
+                counts["screen_fail"] += 1
+                continue
+            gpassed, best, gm = r["gauntlet"]
+            # mirror run_gauntlet's own record: pf_required stores the PF THRESHOLD
+            # pf_required(N), not the integer N_effective (`bar`) the worker was gated on.
+            registry.record(best.cid, fam, "GAUNTLET", "PASS" if gpassed else "FAIL",
+                            pf_required=pf_required(bar), metrics=gm)
+            counts["gauntlet_run"] += 1
+            if not gpassed:
+                counts["gauntlet_fail"] += 1
+                continue
+            if lock is not None:                                 # RULE 2: serial, in-parent
+                status, _ = evaluate_once(best, fam, candles, lock, registry,
+                                          registry.n_effective(), cfg)
+                counts["reserve_run"] += 1
+                if status == "ALIVE":
+                    counts["alive"] += 1
+
+    tasks = [(k, cand, bar) for (k, cand, fam, rej, bar) in plan if rej is None][:to_run]
     if tasks:
         with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
                                  initargs=(cfg, screen_cs, window)) as ex:
-            for r in ex.map(_eval_worker, tasks):
-                results[r["index"]] = r
-
-    # 4b: record every trial IN ORIGINAL ORDER (RULE 1) + run reserve serially (RULE 2)
-    for (k, cand, fam, rej, bar) in plan:
-        if rej is not None:
-            reason, detail = rej
-            registry.record(cand.cid, fam, "GEN_REJECT", "FAIL", metrics=detail, notes=reason)
-            counts["gen_reject"] += 1
-            continue
-        if k not in results:                                     # dropped by budget
-            counts["stopped_on_budget"] = True
-            continue
-        r = results[k]
-        passed, sreason, m = r["screen"]
-        registry.record(cand.cid, fam, "SCREEN", "PASS" if passed else "FAIL",
-                        metrics=m, notes=sreason)
-        counts["screened"] += 1
-        if not passed:
-            counts["screen_fail"] += 1
-            continue
-        gpassed, best, gm = r["gauntlet"]
-        # mirror run_gauntlet's own record: pf_required stores the PF THRESHOLD
-        # pf_required(N), not the integer N_effective (`bar`) the worker was gated on.
-        registry.record(best.cid, fam, "GAUNTLET", "PASS" if gpassed else "FAIL",
-                        pf_required=pf_required(bar), metrics=gm)
-        counts["gauntlet_run"] += 1
-        if not gpassed:
-            counts["gauntlet_fail"] += 1
-            continue
-        if lock is not None:
-            from maker.reserve import evaluate_once
-            status, _ = evaluate_once(best, fam, candles, lock, registry,
-                                      registry.n_effective(), cfg)
-            counts["reserve_run"] += 1
-            if status == "ALIVE":
-                counts["alive"] += 1
+            _record_all(iter(ex.map(_eval_worker, tasks)))
+    else:
+        _record_all(iter(()))
     return counts
-
-
-def _within_budget_count(tasks, started, budget_s):
-    """Trivial guard: we cannot know per-task cost up front, so once the wall-clock
-    budget is already spent submit nothing further; otherwise submit all. Real pacing is
-    the caller's job — the equivalence guarantee holds only with no budget set."""
-    import time
-    return 0 if (time.time() - started) > budget_s else len(tasks)

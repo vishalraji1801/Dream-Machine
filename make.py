@@ -45,16 +45,28 @@ def cmd_generate(args) -> int:
     if not syms:
         print("No daily history in the store. Fetch the F&O daily universe first.")
         return 1
+
+    # Load the reserve lock if present: only then can a candidate be CERTIFIED (a gauntlet
+    # survivor gets its single-shot reserve exam). Without a lock the funnel runs but tops
+    # out at the gauntlet (reserve_run stays 0) — fine for a dry generation, not a hunt.
+    lock = None
+    lock_path = os.path.join(ROOT, "data_cache", "reserve_lock.json")
+    if os.path.exists(lock_path):
+        from maker.reserve import load_lock
+        lock = load_lock(lock_path)
+        syms = [s for s in syms if s in set(lock["symbols"])]     # only locked names
+        print(f"Reserve lock active: cutoff {lock['cutoff_date']}, {len(lock['symbols'])} names.")
+
     candles = {s: store.get_candles(s, "day") for s in syms}
     print(f"Campaign: {args.max_trials} candidates, seed {args.seed}, {len(syms)} symbols, "
-          f"workers {args.workers}...")
+          f"workers {args.workers}, reserve {'ON' if lock else 'off'}...")
     if args.workers > 1:                 # process-parallel; byte-identical to serial
         from maker.parallel_campaign import run_campaign_parallel
         counts = run_campaign_parallel(args.max_trials, args.seed, candles, cfg, _registry(),
-                                       workers=args.workers)
+                                       lock=lock, workers=args.workers)
     else:
         from maker.campaign import run_campaign
-        counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry())
+        counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry(), lock=lock)
     print("counts:", counts)
     return 0
 
