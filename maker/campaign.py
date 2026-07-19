@@ -68,10 +68,15 @@ def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
 
         if lock is not None:
             from maker.reserve import evaluate_once
-            status, _rm = evaluate_once(best, fam, candles, lock, registry,
-                                        registry.n_effective(), cfg)
-            counts["reserve_run"] += 1
-            if status == "ALIVE":
-                counts["alive"] += 1
+            # RULE 2: one single-shot per FAMILY, ever. A later candidate of an
+            # already-examined family is skipped (not re-examined, not a crash).
+            already = any(r["family"] == fam and r["stage"] == "RESERVE"
+                          for r in registry.rows())
+            if not already:
+                status, _rm = evaluate_once(best, fam, candles, lock, registry,
+                                            registry.n_effective(), cfg)
+                counts["reserve_run"] += 1
+                if status == "ALIVE":
+                    counts["alive"] += 1
 
     return counts

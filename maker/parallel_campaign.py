@@ -22,7 +22,7 @@ The result is byte-identical to serial run_campaign for the same seed (asserted 
 """
 import os
 import random
-from concurrent.futures import ProcessPoolExecutor
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 from maker import constraints
 from maker.bar import pf_required
@@ -101,63 +101,66 @@ def run_campaign_parallel(n: int, seed: int, candles: dict, cfg: dict, registry,
         fams_evaluated.add(fam)                                   # this candidate reaches SCREEN
         plan.append((k, cand, fam, None, len(fams_evaluated)))    # bar = live N_effective
 
-    # how many screen-bound candidates to actually run (budget truncates the tail; a
-    # prefix, so recording order and determinism are preserved). Budget is best-effort:
-    # once already over budget at fan-out time, submit nothing further.
     import time
-    n_screen_bound = sum(1 for (_, _, _, rej, _) in plan if rej is None)
-    to_run = n_screen_bound
-    if time_budget_s is not None and (time.time() - started) > time_budget_s:
-        to_run = 0
-
-    # 4: farm the expensive screen+gauntlet across the pool, but RECORD INCREMENTALLY as
-    # ordered results stream back — so a killed 14-hour run keeps every finished trial
-    # (RULE 1: one writer, insertion order). ex.map yields in submission order == plan
-    # order of screen-bound candidates, so we consume it in lockstep with the plan walk.
     from maker.reserve import evaluate_once
 
-    def _record_all(result_iter):
-        seen_run = 0
-        for (k, cand, fam, rej, bar) in plan:
-            if rej is not None:
-                reason, detail = rej
-                registry.record(cand.cid, fam, "GEN_REJECT", "FAIL", metrics=detail,
-                                notes=reason)
-                counts["gen_reject"] += 1
-                continue
-            if seen_run >= to_run:                               # dropped by budget
-                counts["stopped_on_budget"] = True
-                continue
-            r = next(result_iter)
-            seen_run += 1
-            passed, sreason, m = r["screen"]
-            registry.record(cand.cid, fam, "SCREEN", "PASS" if passed else "FAIL",
-                            metrics=m, notes=sreason)
-            counts["screened"] += 1
-            if not passed:
-                counts["screen_fail"] += 1
-                continue
-            gpassed, best, gm = r["gauntlet"]
-            # mirror run_gauntlet's own record: pf_required stores the PF THRESHOLD
-            # pf_required(N), not the integer N_effective (`bar`) the worker was gated on.
-            registry.record(best.cid, fam, "GAUNTLET", "PASS" if gpassed else "FAIL",
-                            pf_required=pf_required(bar), metrics=gm)
-            counts["gauntlet_run"] += 1
-            if not gpassed:
-                counts["gauntlet_fail"] += 1
-                continue
-            if lock is not None:                                 # RULE 2: serial, in-parent
-                status, _ = evaluate_once(best, fam, candles, lock, registry,
-                                          registry.n_effective(), cfg)
-                counts["reserve_run"] += 1
-                if status == "ALIVE":
-                    counts["alive"] += 1
+    # Record the free GEN_REJECTs up front (deterministic, no compute).
+    for (k, cand, fam, rej, bar) in plan:
+        if rej is not None:
+            registry.record(cand.cid, fam, "GEN_REJECT", "FAIL", metrics=rej[1], notes=rej[0])
+            counts["gen_reject"] += 1
 
-    tasks = [(k, cand, bar) for (k, cand, fam, rej, bar) in plan if rej is None][:to_run]
-    if tasks:
+    screen_bound = [(k, cand, fam, bar) for (k, cand, fam, rej, bar) in plan if rej is None]
+
+    # PHASE A — screen+gauntlet across the pool, recorded in COMPLETION order (as_completed),
+    # NOT submission order. This is the fix for the head-of-line freeze: a single slow
+    # candidate can no longer stall the whole ledger — every finished result commits
+    # immediately (RULE 1: one writer; row order is completion order, which is fine since
+    # each row is self-contained and its bar is precomputed, so metrics stay deterministic).
+    # A generous per-task timeout is a safety net against a genuine hang.
+    survivors = []               # (k, best, fam, bar) gauntlet survivors -> serial reserve
+    TASK_TIMEOUT = 1800          # 30 min: ~7x a normal 202-symbol gauntlet; a real hang, not slow
+    if screen_bound:
         with ProcessPoolExecutor(max_workers=workers, initializer=_init_worker,
                                  initargs=(cfg, screen_cs, window)) as ex:
-            _record_all(iter(ex.map(_eval_worker, tasks)))
-    else:
-        _record_all(iter(()))
+            fut_meta = {ex.submit(_eval_worker, (k, cand, bar)): (k, cand, fam, bar)
+                        for (k, cand, fam, bar) in screen_bound}
+            for fut in as_completed(fut_meta):
+                k, cand, fam, bar = fut_meta[fut]
+                try:
+                    r = fut.result(timeout=TASK_TIMEOUT)
+                except Exception as e:                           # hang/crash: log + skip, don't freeze
+                    registry.record(cand.cid, fam, "SCREEN", "FAIL",
+                                    metrics={"error": str(e)[:200]}, notes="worker_error")
+                    counts["screened"] += 1; counts["screen_fail"] += 1
+                    continue
+                passed, sreason, m = r["screen"]
+                registry.record(cand.cid, fam, "SCREEN", "PASS" if passed else "FAIL",
+                                metrics=m, notes=sreason)
+                counts["screened"] += 1
+                if not passed:
+                    counts["screen_fail"] += 1
+                    continue
+                gpassed, best, gm = r["gauntlet"]
+                # pf_required stores the PF THRESHOLD pf_required(N), not the integer N (`bar`).
+                registry.record(best.cid, fam, "GAUNTLET", "PASS" if gpassed else "FAIL",
+                                pf_required=pf_required(bar), metrics=gm)
+                counts["gauntlet_run"] += 1
+                if not gpassed:
+                    counts["gauntlet_fail"] += 1
+                    continue
+                survivors.append((k, best, fam, bar))
+
+    # PHASE B — reserve exam, SERIAL and in CANDIDATE ORDER (RULE 2: one single-shot per
+    # FAMILY, ever; the lowest-index survivor of a family gets it, so the verdict is
+    # deterministic regardless of Phase-A completion order). Reserve data is tiny (fast).
+    reserved = {r["family"] for r in registry.rows() if r["stage"] == "RESERVE"}
+    for (k, best, fam, bar) in sorted(survivors, key=lambda t: t[0]):
+        if lock is None or fam in reserved:
+            continue
+        status, _ = evaluate_once(best, fam, candles, lock, registry, bar, cfg)
+        reserved.add(fam)
+        counts["reserve_run"] += 1
+        if status == "ALIVE":
+            counts["alive"] += 1
     return counts

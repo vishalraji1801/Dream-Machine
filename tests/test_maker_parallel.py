@@ -1,9 +1,10 @@
 """Strategy Maker — process-parallel campaign equivalence.
 
-The one guarantee that matters: for the same seed, the parallel campaign writes a registry
-BYTE-IDENTICAL to the serial one (same rows, same order, same metrics, same bar) — proving
-we broke neither determinism (RULE-free reproducibility) nor RULE 1 (append-only, one
-writer, ordered). Everything else about parallelism is a speed detail; this is correctness.
+The one guarantee that matters: for the same seed, the parallel campaign writes the SAME
+SET of trials as the serial one (same rows, same metrics, same bar) — proving we broke
+neither reproducibility nor RULE 1 (every trial logged, append-only). Row ORDER differs
+by design: results are recorded in completion order (not candidate order) so a single slow
+candidate can't freeze the ledger — so we compare sorted signatures, not sequences.
 """
 import math
 import os
@@ -38,7 +39,8 @@ _COLS = ("cid", "family", "sleeve", "stage", "status", "pf_required", "metrics_j
 
 
 def _sig(reg):
-    return [tuple(r[c] for c in _COLS) for r in reg.rows()]
+    # sorted set of rows — order is completion-order (nondeterministic), contents are not
+    return sorted(tuple(r[c] for c in _COLS) for r in reg.rows())
 
 
 def test_parallel_registry_is_byte_identical_to_serial(tmp_path):

@@ -165,7 +165,13 @@ def _setup_level(name, params, df):
         pct = _bbwidth_pctile(df)
         if pct is None or pct >= params["bbw_pctile_below"]:
             return None
-        return last
+        # A squeeze is a STATE, not an entry. Return the top of the contraction range as
+        # the breakout LEVEL, so breakout_close fires only on a real expansion out of the
+        # squeeze — not every compressed bar (the tautology that made this over-trade).
+        w = params.get("min_bars", 10)
+        if len(df) < w + 1:
+            return None
+        return float(df["high"].iloc[-(w + 1):-1].max())
     if name == "band_touch":
         period, sd = params["bollinger"]
         mid = close.rolling(period).mean().iloc[-1]

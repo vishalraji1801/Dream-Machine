@@ -13,6 +13,13 @@ from maker.grammar import compile
 
 DEFAULTS = {"min_trades": 30, "min_pf": 1.1, "top3_max_frac": 0.60}
 
+# A swing/delivery strategy that trades a name more than ~weekly is degenerate — usually a
+# tautological "enter every bar" combo. Killing it at the cheap screen (before the
+# 24-variant gauntlet) bounds compute and keeps the funnel honest. Deliberately loose
+# (~50/name/yr = near-daily) so it only ever catches genuine runaways, not active edges.
+OVERTRADE_PER_SYMBOL_YEAR = 50
+_TRADING_DAYS = 252
+
 # The compiled candidate fn (grammar.compile) needs >=210 bars of warmup (200-period
 # SMA/lookback blocks) or it holds forever. The backtester feeds it a rolling window of
 # exactly this many bars, so the maker's screen/gauntlet/reserve MUST run >= that floor —
@@ -88,6 +95,12 @@ def screen_candidate(candidate, candles: dict, cfg: dict, window: int = WINDOW,
     finally:
         STRATEGY_REGISTRY.pop(candidate.cid, None)
     m = _metrics(res)
+    # degenerate over-trading guard: bounds compute for pathological recipes and kills
+    # tautological combos cheaply, before the expensive gauntlet variant sweep.
+    n_sym = max(len(candles), 1)
+    years = max((len(df) for df in candles.values()), default=_TRADING_DAYS) / _TRADING_DAYS
+    if m["trades"] > OVERTRADE_PER_SYMBOL_YEAR * n_sym * years:
+        return False, "overtrading", m
     passed, reason = screen_decision(m, thresholds)
     return passed, reason, m
 
