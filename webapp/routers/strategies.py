@@ -29,13 +29,44 @@ def _load_cfg() -> dict:
         return yaml.safe_load(f)
 
 
+def _swing_state(cfg: dict) -> dict:
+    """The swing sleeve's edges with validated/benched status + fit PF, read live
+    from strategies/*.yaml — reflects the post-gauntlet reality."""
+    import os
+
+    from src.regime import Regime
+    from src.strategy_meta import load_strategy_dir, param_set_for
+    from src.swing_engine import SWING_STRATEGIES
+
+    cfg_path = os.path.abspath(get_settings().config_path)
+    strat_dir = os.path.join(os.path.dirname(os.path.dirname(cfg_path)), "strategies")
+    try:
+        metas = load_strategy_dir(strat_dir)
+    except Exception:
+        metas = {}
+    edges = []
+    for name in SWING_STRATEGIES:
+        m = metas.get(name)
+        if m is None:
+            continue
+        validated = any(param_set_for(m, r, "paper") is not None for r in Regime)
+        pfs = [getattr(f, "pf", None) for f in getattr(m, "regime_fit", {}).values()]
+        pfs = [p for p in pfs if p is not None]
+        edges.append({"name": name, "validated": validated,
+                      "pf": max(pfs) if pfs else None})
+    edges.sort(key=lambda e: (not e["validated"], -(e["pf"] or 0)))
+    return {"enabled": cfg.get("swing", {}).get("enabled", False), "edges": edges}
+
+
 @router.get("")
 def list_strategies() -> dict:
     cfg = _load_cfg()
     return {
         "registered": sorted(STRATEGY_REGISTRY.keys()),
         "active": cfg.get("strategy", {}).get("name", "") or "",
-        "allowed": cfg.get("ai", {}).get("allowed_strategies", []),
+        "allowed": cfg.get("overlay", {}).get("allowed_strategies", []),
+        "intraday_enabled": cfg.get("intraday", {}).get("enabled", True),
+        "swing": _swing_state(cfg),
     }
 
 

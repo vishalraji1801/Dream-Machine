@@ -75,12 +75,16 @@ def test_exit_on_trailing_stop(tmp_path):
     eng.run_daily(now=NOW)
     assert "AAA" in eng.positions
     stop = eng.positions["AAA"].stop
-    # next day: AAA craters below the stop (and not a new high -> no re-entry)
+    # next day: AAA craters below the stop -> the trailing stop must exit the long.
     crash = [100 + i * 0.8 for i in range(259)] + [stop - 20]
     data["AAA"] = _daily(crash, lows=[c - 2 for c in crash[:-1]] + [stop - 25])
     eng.run_daily(now=datetime(2026, 7, 15, 15, 5))
-    assert "AAA" not in eng.positions                     # stopped out
+    # The trailing stop exited the original donchian long. A dip-buy / other strategy
+    # may re-enter AAA the SAME cycle (separate, valid decision) now that the sleeve
+    # holds 6 strategies — so assert the EXIT fired, not permanent absence.
     assert any(t["exit_reason"].startswith("swing_stop") for t in db.trades)
+    held = eng.positions.get("AAA")
+    assert held is None or held.entry_date != NOW.date().isoformat()   # original long gone
 
 
 def test_no_entry_when_index_ranges(tmp_path):

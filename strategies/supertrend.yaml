@@ -1,15 +1,17 @@
 name: supertrend
-# Trend-following flip. Params + fit SEEDED from the TCS walk-forward result
-# (period 22 / mult 3.0 was the OOS winner: 120 trades, PF 1.12). validated:true so
-# the router may run it in paper. This SEED is replaced by the learned map once the
-# ledger accrues real per-(strategy x regime) history (regime_analyst weekly job).
+# BENCHED 2026-07-15. The TCS-seeded edge (PF 1.12) did NOT survive a broader
+# walk-forward: on 19 liquid large-caps (15min, regime filter ON), the best stable
+# params (period 22 / mult 4.0, 3/3 folds) gave OOS PF 1.00, net -Rs.103, 101%
+# in->OOS degradation — a break-even coin flip that pays costs. No standalone edge.
+# validated:false everywhere => the router BENCHES it (intraday trades nothing
+# until a new, validated intraday strategy replaces it). User is sourcing one.
 regime_param_sets:
-  STRONG_TREND_UP:   {supertrend_period: 22, supertrend_mult: 3.0, validated: true, oos_ref: tcs_15min_wf}
-  STRONG_TREND_DOWN: {supertrend_period: 22, supertrend_mult: 3.0, validated: true, oos_ref: tcs_15min_wf}
+  STRONG_TREND_UP:   {supertrend_period: 22, supertrend_mult: 4.0, validated: false, oos_ref: wf_liquid20_15min_pf1.00}
+  STRONG_TREND_DOWN: {supertrend_period: 22, supertrend_mult: 4.0, validated: false, oos_ref: wf_liquid20_15min_pf1.00}
   RANGE:             {enabled: false}
   QUIET:             {enabled: false}
   HIGH_VOL_CHOP:     {enabled: false}
-  default:           {supertrend_period: 22, supertrend_mult: 3.0, validated: true, oos_ref: tcs_15min_wf}
+  default:           {supertrend_period: 22, supertrend_mult: 4.0, validated: false, oos_ref: wf_liquid20_15min_pf1.00}
 regime_fit:
-  STRONG_TREND_UP:   {pf: 1.12, trades: 120, source: seed_wf_tcs}
-  STRONG_TREND_DOWN: {pf: 1.12, trades: 120, source: seed_wf_tcs}
+  STRONG_TREND_UP:   {pf: 1.00, trades: 360, source: wf_liquid20_15min}
+  STRONG_TREND_DOWN: {pf: 1.00, trades: 360, source: wf_liquid20_15min}

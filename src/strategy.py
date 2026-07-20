@@ -122,6 +122,22 @@ def _hold(symbol: str, reason: str) -> TradeSignal:
     return TradeSignal("HOLD", symbol, 0.0, 0.0, 0.0, reason)
 
 
+def _swing_pivots(df: pd.DataFrame, k: int = 3) -> tuple[list, list]:
+    """Confirmed swing pivots: (highs, lows) as lists of (pos, price). A pivot high
+    is the max high in [i-k, i+k]; a pivot low the min low. The last k bars are
+    excluded (no right-side confirmation) — so this never peeks at the future for
+    the current bar. Used by pattern strategies (abcd, head & shoulders)."""
+    h, low = df["high"].values, df["low"].values
+    n = len(df)
+    highs, lows = [], []
+    for i in range(k, n - k):
+        if h[i] == max(h[i - k:i + k + 1]) and h[i] > h[i - 1]:
+            highs.append((i, float(h[i])))
+        if low[i] == min(low[i - k:i + k + 1]) and low[i] < low[i - 1]:
+            lows.append((i, float(low[i])))
+    return highs, lows
+
+
 def _ema_col(df: pd.DataFrame, window: int):
     return EMAIndicator(df["close"], window=window).ema_indicator()
 
@@ -190,6 +206,11 @@ def generate_signal(symbol: str, df: pd.DataFrame, cfg: dict) -> TradeSignal:
     if strategy_fn is None:
         return _hold(symbol, "no_strategy")
     signal = strategy_fn(symbol, df, cfg)
+    # long_only: suppress shorts. The CNC swing sleeve CANNOT hold equity shorts
+    # overnight (delivery shorting needs SLB, not practically available on Kite), so
+    # a validated edge that includes shorts is untradeable — measure/trade long-only.
+    if cfg.get("long_only") and signal.direction == "SELL":
+        return _hold(symbol, "long_only")
     return _apply_mtf_gate(symbol, df, cfg, signal)
 
 

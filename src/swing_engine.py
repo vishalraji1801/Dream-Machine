@@ -29,7 +29,9 @@ from src.strategy_meta import load_strategy_dir
 
 logger = get_logger("swing_engine")
 
-SWING_STRATEGIES = ("donchian_trend_tsl", "bb_mean_reversion")
+SWING_STRATEGIES = ("donchian_trend_tsl", "bb_mean_reversion",
+                    "volatility_contraction_breakout", "double_reversal",
+                    "index_dip_reversion", "ma_pullback", "abcd_pattern")
 
 
 @dataclass
@@ -130,12 +132,22 @@ class SwingEngine:
             atr = _atr(df, 14) or pos.atr
 
             if pos.strategy == "donchian_trend_tsl":       # ratchet the trailing stop
+                prev_stop = pos.stop
                 if pos.direction == "BUY":
                     pos.peak = max(pos.peak, close)
                     pos.stop = max(pos.stop, pos.peak - self.atr_mult * atr)
                 else:
                     pos.peak = min(pos.peak, close)
                     pos.stop = min(pos.stop, pos.peak + self.atr_mult * atr)
+                # Kite has no native trailing GTT — when the stop moves, the bot must
+                # MODIFY the exchange GTT itself (live only; paper simulates the exit).
+                executor = getattr(self, "executor", None)   # None until live exec is wired
+                if (self.mode == "live" and pos.stop != prev_stop and executor is not None):
+                    try:
+                        executor.modify_gtt(pos.symbol, pos.direction,
+                                            pos.quantity, round(pos.stop, 2), pos.target)
+                    except Exception as exc:
+                        logger.error(f"swing: GTT modify failed for {pos.symbol} — {exc}")
 
             exit_price = reason = None
             if pos.direction == "BUY":
@@ -196,7 +208,9 @@ class SwingEngine:
         if self.db is not None:
             self.db.record_signal(source=self.mode, symbol=sym, direction=sig.direction,
                                   taken=True, strategy=strat)
-        # TODO(live): place CNC order + GTT stop via order_executor (paper simulates)
+        # TODO(live): place the CNC entry + a static stop GTT here (Kite has no native
+        # trailing GTT); _manage_exits then modifies that GTT each day the stop ratchets.
+        # Paper simulates fills/exits.
 
     def _close(self, pos: SwingPosition, exit_price: float, reason: str, now: datetime):
         pnl = ((exit_price - pos.entry_price) if pos.direction == "BUY"

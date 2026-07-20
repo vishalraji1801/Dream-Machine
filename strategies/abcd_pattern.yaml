@@ -1,0 +1,12 @@
+name: abcd_pattern
+# S-08 · BENCHED 2026-07-16. Passed under the intraday cost model (blue-chip OOS PF
+# 1.25) but FAILED under real DELIVERY (CNC) costs: OOS PF 1.11 (below the 1.2 bar).
+# validated:false => not traded. Re-test if a lower-turnover variant is found.
+regime_param_sets:
+  STRONG_TREND_UP:   {abcd_pivot_k: 3, abcd_r_multiple: 3.0, validated: false, oos_ref: delivery_cost_fail_pf1.11}
+  STRONG_TREND_DOWN: {enabled: false}
+  RANGE:             {enabled: false}
+  QUIET:             {enabled: false}
+  default:           {enabled: false}
+regime_fit:
+  STRONG_TREND_UP:   {pf: 1.11, trades: 314, source: walkforward_bluechip_delivery}

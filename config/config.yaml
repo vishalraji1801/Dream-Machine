@@ -134,6 +134,8 @@ risk:
 
 costs:
   enabled: true            # subtract estimated charges from every trade P&L
+  product: delivery        # delivery (CNC/swing) | intraday (MIS). Bot is swing-only.
+  # ── intraday (MIS) rates — used only if product: intraday ──
   brokerage_pct: 0.03      # per executed order, capped below
   brokerage_cap: 20        # Rs. cap per order
   stt_sell_pct: 0.025      # STT on sell leg (intraday equity)
@@ -141,6 +143,21 @@ costs:
   sebi_pct: 0.0001         # SEBI charges on turnover
   stamp_buy_pct: 0.003     # stamp duty on buy leg
   gst_pct: 18.0            # GST on brokerage + exchange + SEBI
+  # ── delivery (CNC) rates — Zerodha: brokerage-free but STT 0.1% BOTH legs ──
+  delivery:
+    brokerage_pct: 0.0     # equity delivery is brokerage-free at Zerodha
+    stt_pct: 0.1           # STT 0.1% on BOTH buy and sell (vs 0.025% sell-only intraday)
+    exchange_txn_pct: 0.00297
+    sebi_pct: 0.0001
+    stamp_buy_pct: 0.015   # stamp duty on buy leg (higher than intraday)
+    dp_charge: 15.34       # flat CDSL+broker DP debit per sell (incl. GST approx)
+    gst_pct: 18.0
+
+intraday:
+  enabled: false           # SUSPENDED — the intraday sleeve (router/scanner 5-min
+                           # entries) is off across paper/live. No intraday edge was
+                           # found on any timeframe (all 14 strategies failed OOS).
+                           # The bot trades the SWING sleeve only. Set true to re-enable.
 
 scheduler:
   cycle_interval_seconds: 300
@@ -153,12 +170,16 @@ data_feed:                   # tick-built candles (SCRUM-106): zero per-cycle RE
   seed_lookback_days: 12     # ~12 sessions of 15min so a 1hr EMA-50 MTF gate warms
   min_bars: 30               # REST fallback until this many bars exist per symbol
   max_bars: 260              # deep enough for the higher-TF confirmation gate
+  seed_max_symbols: 80       # cap startup REST seeding for a large universe (0=all);
+                             # index+watchlist always seeded, rest warm via REST-fallback
 
 overlay:
   overlay_enabled: true                      # apply the auto-tuner's validated overlay at startup
   overlay_path: "config/overlay.yaml"        # written by the auto-tuner (walk-forward winner)
   # Hard bounds the overlay can never exceed (the safety sandbox):
-  allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty"]
+  allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty",
+                       "volatility_contraction_breakout", "double_reversal",
+                       "index_dip_reversion", "ma_pullback", "abcd_pattern"]
   min_stop_loss_pct: 0.5
   max_stop_loss_pct: 2.0
   min_target_pct: 0.5
@@ -174,12 +195,18 @@ paper_trading:
   realistic_fills: true   # LIMIT orders fill only when live price crosses the limit
 
 universe:
-  enabled: false          # OPT-IN (V2 P3): when true, scan a dynamic universe
-                          # instead of the fixed watchlist. Needs a live-market
-                          # paper run to validate before use.
+  enabled: true           # Scan a dynamic NSE universe instead of the fixed
+                          # watchlist. Built at startup from the live session if
+                          # no universe file exists for today.
+  fno_only: true          # Restrict to NSE stocks that HAVE F&O contracts — the
+                          # ~190 institutionally-liquid, MIS-friendly names. This
+                          # is "all *tradeable* NSE": literally all EQ would drag
+                          # in illiquid small-caps that blow strategies up
+                          # (e.g. CUPID -14.6L in backtest). Set false for all EQ.
+  ws_max_symbols: 2900    # one WebSocket connection carries up to 3,000 instruments
   price_min: 100
   price_max: 5000
-  fno_underlyings: []     # optional curated pool; empty -> use the watchlist
+  fno_underlyings: []     # extra curated names to force-include (union with F&O)
   exclude: []             # symbols to always exclude (F&O ban-list, etc.)
   # Backtest stock-selection quality filters (SCRUM-98):
   min_turnover_cr: 50     # min avg daily turnover in Rs. crore (liquidity floor)
@@ -236,6 +263,9 @@ swing:
   atr_stop_mult: 6.0      # donchian trailing-stop ATR multiple
   lookback_days: 320      # daily bars fetched (>= 200 for the breakout window)
   product: CNC            # delivery (overnight); intraday sleeve uses MIS
+  # Kite Connect exposes only STATIC GTT triggers (no native trailing SL), so the bot
+  # ratchets the stop itself and MODIFIES the GTT each day it moves. Backtest simulates
+  # the ATR trail directly.
 
 events:
   path: "config/events.yaml"   # market-wide + per-stock event days to skip

@@ -21,19 +21,24 @@ logger = get_logger("universe_builder")
 
 
 def filter_universe(instruments: list[dict], ltp_map: Optional[dict] = None,
-                    cfg: Optional[dict] = None) -> list[dict]:
+                    cfg: Optional[dict] = None,
+                    fno_underlyings: Optional[set] = None) -> list[dict]:
     """
-    instruments: Kite instrument dump rows (dicts with tradingsymbol,
+    instruments: Kite NSE instrument dump rows (dicts with tradingsymbol,
     instrument_token, instrument_type, segment, exchange).
     ltp_map: {tradingsymbol: ltp} for the price-band filter (optional).
     cfg: the `universe:` config section.
+    fno_underlyings: set of symbols that have F&O contracts (liquid, MIS-friendly).
+        When cfg['fno_only'] is true (default), the universe is restricted to these
+        — "all *tradeable* NSE" without the illiquid tail that blows strategies up.
     Returns [{symbol, token}] for names that pass all filters.
     """
     cfg = cfg or {}
     ltp_map = ltp_map or {}
     price_min = cfg.get("price_min", 100)
     price_max = cfg.get("price_max", 5000)
-    fno = set(cfg.get("fno_underlyings", []))
+    fno_only = cfg.get("fno_only", True)
+    liquid = set(fno_underlyings or set()) | set(cfg.get("fno_underlyings", []))
     exclude = set(cfg.get("exclude", []))
 
     out = []
@@ -41,17 +46,16 @@ def filter_universe(instruments: list[dict], ltp_map: Optional[dict] = None,
         sym = inst.get("tradingsymbol")
         if not sym or sym in exclude:
             continue
-        if inst.get("instrument_type") != "EQ":
+        if inst.get("instrument_type") != "EQ" or inst.get("exchange", "NSE") != "NSE":
             continue
-        if inst.get("exchange", "NSE") != "NSE":
-            continue
-        if fno and sym not in fno:
-            continue
+        if fno_only and liquid and sym not in liquid:
+            continue                      # keep only F&O-underlying (liquid) names
         ltp = ltp_map.get(sym)
         if ltp is not None and not (price_min <= ltp <= price_max):
             continue
         out.append({"symbol": sym, "token": inst.get("instrument_token")})
-    logger.info(f"Universe filtered to {len(out)} symbols")
+    logger.info(f"Universe filtered to {len(out)} symbols "
+                f"({'F&O-liquid' if fno_only and liquid else 'all EQ in band'})")
     return out
 
 
@@ -66,9 +70,23 @@ class UniverseBuilder:
         day = day or datetime.now()
         return os.path.join(self._cache_dir, f"universe_{day:%Y-%m-%d}.csv")
 
+    def _fno_underlyings(self, kite) -> set:
+        """Symbols that have F&O contracts on NFO — the liquid, MIS-friendly set.
+        Auto-derived from the live instrument dump so it stays current daily."""
+        try:
+            nfo = kite.instruments("NFO")
+        except Exception as exc:
+            logger.warning(f"NFO dump failed ({exc}) — F&O-liquid filter disabled")
+            return set()
+        names = {i.get("name") for i in nfo
+                 if i.get("instrument_type") in ("FUT", "CE", "PE") and i.get("name")}
+        logger.info(f"F&O underlyings derived from NFO dump: {len(names)}")
+        return names
+
     def build(self, kite) -> list[dict]:
         """Fetch instruments (+ optional LTP snapshot) and write today's universe file."""
         instruments = kite.instruments(self._exchange)
+        fno = self._fno_underlyings(kite) if self._u.get("fno_only", True) else set()
         ltp_map = {}
         try:
             symbols = [f"{self._exchange}:{i['tradingsymbol']}" for i in instruments
@@ -82,7 +100,7 @@ class UniverseBuilder:
         except Exception as exc:
             logger.warning(f"LTP snapshot failed ({exc}) — price band skipped")
 
-        universe = filter_universe(instruments, ltp_map, self._u)
+        universe = filter_universe(instruments, ltp_map, self._u, fno_underlyings=fno)
         self._write(universe)
         return universe
 

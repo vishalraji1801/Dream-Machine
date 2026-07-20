@@ -1,15 +1,15 @@
 name: bb_mean_reversion
-# Daily buy-the-dip mean-reversion (above 200-MA, below lower Bollinger). Runs in
-# RANGE/QUIET; disabled in trends (never fade a strong trend). Params + fit SEEDED
-# from the 10-yr multi-stock backtest (positive but small samples). validated:true
-# for the swing sleeve; seed replaced by the learned map as the paper ledger fills.
+# S-26 · BENCHED 2026-07-17. Always the fragile survivor (delivery OOS PF 1.20, right
+# at the bar). Under the upgraded gauntlet (delivery cost + 0.10% slippage) it fell to
+# WF PF 1.09 / slip 1.02 — below the bar. validated:false => not traded. Re-test if a
+# more selective entry (fewer, higher-quality dips) lifts it clear of costs.
 regime_param_sets:
-  RANGE:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: true, oos_ref: multistock_10y}
-  QUIET:             {bb_std: 2.5, bb_buy_limit_offset_pct: 3.0, validated: true, oos_ref: multistock_10y}
+  RANGE:             {bb_std: 2.0, bb_buy_limit_offset_pct: 0.0, validated: false, oos_ref: gauntlet_fail_pf1.09}
+  QUIET:             {bb_std: 2.0, bb_buy_limit_offset_pct: 0.0, validated: false, oos_ref: gauntlet_fail_pf1.09}
   STRONG_TREND_UP:   {enabled: false}
   STRONG_TREND_DOWN: {enabled: false}
   HIGH_VOL_CHOP:     {enabled: false}
-  default:           {bb_std: 2.5, validated: true, oos_ref: multistock_10y}
+  default:           {enabled: false}
 regime_fit:
-  RANGE:             {pf: 1.5, trades: 35, source: seed_10y_multistock}
-  QUIET:             {pf: 1.5, trades: 35, source: seed_10y_multistock}
+  RANGE:             {pf: 1.09, trades: 36, source: gauntlet_delivery_slippage}
+  QUIET:             {pf: 1.09, trades: 36, source: gauntlet_delivery_slippage}

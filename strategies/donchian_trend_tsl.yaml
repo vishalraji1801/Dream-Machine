@@ -1,14 +1,18 @@
 name: donchian_trend_tsl
-# Daily 200-day breakout, long+short, 6x ATR trailing stop. Params + fit SEEDED
-# from the 10-yr multi-stock backtest (positive on all 9 stocks, PF 1.16-2.88).
-# validated:true so the swing sleeve runs it in trend regimes. Seed is replaced by
-# the learned map once the paper ledger accrues real per-regime history.
+# Daily Donchian breakout, long+short. Params VALIDATED by walk-forward OOS on
+# liquid blue-chips (RELIANCE/TCS/INFY/HCLTECH, ~10yr daily): lookback 150 +
+# ATR-mult 5.0 won all 3 folds (3/3 stability) with OOS PF 1.37, 129 trades,
+# 69% win, +Rs.55k, ~42% in->OOS degradation (healthy). See focused_walkforward.py.
+# NOTE: the backtest exit was a FIXED 5xATR stop; the live swing sleeve manages
+# exits with a 6xATR *trailing* stop (config swing.atr_stop_mult) — so live is an
+# approximation of the validated model, not identical. Reconciling the exit model
+# is a tracked follow-up.
 regime_param_sets:
-  STRONG_TREND_UP:   {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: true, oos_ref: multistock_10y}
-  STRONG_TREND_DOWN: {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: true, oos_ref: multistock_10y}
+  STRONG_TREND_UP:   {donchian_lookback: 150, donchian_atr_mult: 5.0, validated: true, oos_ref: walkforward_bluechip_2026-07-15}
+  STRONG_TREND_DOWN: {donchian_lookback: 150, donchian_atr_mult: 5.0, validated: true, oos_ref: walkforward_bluechip_2026-07-15}
   RANGE:             {enabled: false}
   QUIET:             {enabled: false}
-  default:           {donchian_lookback: 200, donchian_atr_mult: 6.0, validated: true, oos_ref: multistock_10y}
+  default:           {donchian_lookback: 150, donchian_atr_mult: 5.0, validated: true, oos_ref: walkforward_bluechip_2026-07-15}
 regime_fit:
-  STRONG_TREND_UP:   {pf: 1.4, trades: 50, source: seed_10y_multistock}
-  STRONG_TREND_DOWN: {pf: 1.4, trades: 50, source: seed_10y_multistock}
+  STRONG_TREND_UP:   {pf: 1.37, trades: 129, source: walkforward_bluechip_10y}
+  STRONG_TREND_DOWN: {pf: 1.37, trades: 129, source: walkforward_bluechip_10y}
