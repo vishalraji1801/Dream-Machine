@@ -54,6 +54,20 @@ def _fake_fail(cand, reserve_by_symbol, cfg):
     return {"trades": 40, "pf": 1.05, "net": 500, "top3_frac": 0.2, "rank": 3.0}
 
 
+def _fake_outlier(cand, reserve_by_symbol, cfg):
+    # strong pf/trades/net, but the top 3 trades are >60% of net -> outlier-carried
+    return {"trades": 40, "pf": 2.5, "net": 5000, "top3_frac": 0.72, "rank": 5.0}
+
+
+def test_reserve_rejects_outlier_carried_even_if_pf_clears(tmp_path):
+    lock = _lock(tmp_path)
+    reg = Registry(str(tmp_path / "trials.db"))
+    c = _cand()
+    status, _ = R.evaluate_once(c, family_id(c), {"AAA": _df()}, lock, reg,
+                                n_effective=100, cfg={}, evaluator=_fake_outlier)
+    assert status == "DEAD"          # concentration guard: as strict as the screen
+
+
 def test_reserve_pass_marks_family_alive(tmp_path):
     lock = _lock(tmp_path)
     reg = Registry(str(tmp_path / "trials.db"))

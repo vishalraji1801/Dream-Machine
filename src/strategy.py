@@ -302,3 +302,7 @@ def market_regime(df: pd.DataFrame, cfg: dict) -> Regime:
 # these helpers, so this avoids a circular import.
 from src.strategy_library import REGISTRY as _LIBRARY   # noqa: E402
 STRATEGY_REGISTRY.update(_LIBRARY)
+
+# Maker reserve-CERTIFIED strategies (auto-generated from the ALIVE reserve verdicts).
+from src.maker_certified import REGISTRY as _MAKER_CERTIFIED   # noqa: E402
+STRATEGY_REGISTRY.update(_MAKER_CERTIFIED)
