@@ -11,10 +11,16 @@ from maker.blocks import BLOCKS
 from maker.grammar import make_candidate
 
 # blocks with a working evaluator in grammar.compile (expanded as indicators land)
+# Candlestick/chart-pattern catalog ENABLED:
+#   chart setups   : pullback_depth, flush, gap, double_bottom, inv_head_shoulders, fib_pullback
+#   candlestick trg: confirm_candle (hammer/doji), bullish_reversal_candle (engulfing/morning_star)
 IMPLEMENTED = {
     "regime": ["trend_side", "bb_width_pctile", "adx_band"],
-    "setup": ["nday_extreme", "compression", "band_touch", "objective_level"],
-    "trigger": ["breakout_close", "limit_below", "resume_new_high"],
+    "setup": ["nday_extreme", "compression", "band_touch", "objective_level",
+              "pullback_depth", "flush", "gap", "double_bottom",
+              "inv_head_shoulders", "fib_pullback"],
+    "trigger": ["breakout_close", "limit_below", "resume_new_high",
+                "confirm_candle", "bullish_reversal_candle"],
     "exit": ["atr_trail", "r_multiple", "opposite_band"],
 }
 

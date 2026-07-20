@@ -9,6 +9,8 @@ Survivors are ranked PF * log(trades) for the gauntlet queue.
 import copy
 import math
 
+import pandas as pd
+
 from maker.grammar import compile
 
 DEFAULTS = {"min_trades": 30, "min_pf": 1.1, "top3_max_frac": 0.60}
@@ -103,6 +105,37 @@ def screen_candidate(candidate, candles: dict, cfg: dict, window: int = WINDOW,
         return False, "overtrading", m
     passed, reason = screen_decision(m, thresholds)
     return passed, reason, m
+
+
+def oos_metrics(candidate, candles_by_symbol: dict, oos_start, cfg: dict,
+                window: int = WINDOW) -> dict:
+    """Walk-forward OOS scoring WITH warmup — the shared primitive for the gauntlet's
+    out-of-sample test and the reserve exam.
+
+    Backtest each symbol's full frame but score ONLY trades ENTERED on/after oos_start;
+    earlier bars warm the rolling window and are never counted. `oos_start` is one
+    timestamp (reserve: the cutoff) or a {symbol: timestamp} map (gauntlet: the split
+    boundary). This replaces slicing the holdout off with no history — which discarded the
+    first ~WINDOW bars of every OOS window and, when the holdout was shorter than WINDOW,
+    produced 0 trades and a false DEAD/FAIL. best_v/the candidate is already fixed, so
+    warming up on the in-sample/pre-cutoff bars is context, not leakage."""
+    from src.backtester import Backtester, BacktestResult
+    from src.strategy import STRATEGY_REGISTRY
+    fn = compile(candidate)
+    STRATEGY_REGISTRY[candidate.cid] = fn
+    try:
+        res = Backtester(_prepare_cfg(candidate, cfg), window=window).run(candles_by_symbol)
+    finally:
+        STRATEGY_REGISTRY.pop(candidate.cid, None)
+
+    def _naive(ts):
+        ts = pd.Timestamp(ts)
+        return ts.tz_localize(None) if ts.tz is not None else ts
+
+    def _start(sym):
+        return _naive(oos_start[sym] if isinstance(oos_start, dict) else oos_start)
+    scored = [t for t in res.trades if _naive(t.entry_time) >= _start(t.symbol)]
+    return _metrics(BacktestResult.from_trades(scored))
 
 
 def _vectorizable(candidate) -> dict:

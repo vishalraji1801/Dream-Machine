@@ -76,6 +76,33 @@ def test_reserve_single_shot_per_family(tmp_path):
         R.evaluate_once(c2, family_id(c2), {"AAA": _df()}, lock, reg, 100, {}, evaluator=_fake_pass)
 
 
+def test_void_supersedes_and_reopens_the_single_shot(tmp_path):
+    """Append-only correction: a VOID marker invalidates a prior (buggy) verdict, reopens
+    the single shot, and the re-run's result becomes the effective verdict — nothing deleted."""
+    lock = _lock(tmp_path)
+    reg = Registry(str(tmp_path / "trials.db"))
+    c = _cand()
+    fam = family_id(c)
+    # 1. a first (say buggy) DEAD verdict is recorded
+    R.evaluate_once(c, fam, {"AAA": _df()}, lock, reg, 100, {}, evaluator=_fake_fail)
+    assert R.reserve_verdict(reg.rows(), fam)["status"] == "DEAD"
+    # 2. invalidate it -> family may take a fresh shot again
+    R.invalidate_reserve(reg, fam, reason="bug: 0-trade warmup")
+    assert R.reserve_verdict(reg.rows(), fam) is None
+    # 3. re-run -> new verdict stands as the effective one
+    status, _ = R.evaluate_once(c, fam, {"AAA": _df()}, lock, reg, 100, {}, evaluator=_fake_pass)
+    assert status == "ALIVE"
+    assert R.reserve_verdict(reg.rows(), fam)["status"] == "ALIVE"
+    assert R.effective_reserve_table(reg.rows())[fam] == "ALIVE"
+    # 4. and it is single-shot again (no fresh VOID) -> blocked
+    with pytest.raises(RuntimeError):
+        R.evaluate_once(c, fam, {"AAA": _df()}, lock, reg, 100, {}, evaluator=_fake_fail)
+    # audit trail preserved: DEAD, VOID, ALIVE all still present (append-only)
+    stages = [(r["stage"], r["status"]) for r in reg.rows() if r["family"] == fam
+              and r["stage"] == "RESERVE"]
+    assert stages == [("RESERVE", "DEAD"), ("RESERVE", "VOID"), ("RESERVE", "ALIVE")]
+
+
 def test_reserve_fail_uses_the_rising_bar(tmp_path):
     lock = _lock(tmp_path)
     reg = Registry(str(tmp_path / "trials.db"))
@@ -86,3 +113,59 @@ def test_reserve_fail_uses_the_rising_bar(tmp_path):
                                 n_effective=1000, cfg={}, evaluator=lambda *a: metrics)
     assert status == "DEAD"
     assert reg.rows()[0]["pf_required"] == 1.50
+
+
+# ── warmup regression: a short holdout must NOT auto-DEAD every candidate ──────
+
+def test_reserve_eval_frame_prepends_warmup_and_is_gated(tmp_path):
+    lock = _lock(tmp_path, cutoff="2021-01-01")
+    df = pd.DataFrame({"timestamp": pd.date_range("2018-01-01", periods=1500, freq="D"),
+                       "open": range(1500), "high": range(1500), "low": range(1500),
+                       "close": range(1500), "volume": [1] * 1500})
+    R._UNLOCKED = True
+    try:
+        f = R._reserve_eval_frame(df, lock, warmup=260)
+    finally:
+        R._UNLOCKED = False
+    cutoff = pd.to_datetime("2021-01-01")
+    ts = pd.to_datetime(f["timestamp"])
+    assert (ts < cutoff).sum() == 260          # exactly the warmup tail is prepended
+    assert (ts >= cutoff).sum() > 0            # plus the real post-cutoff test window
+    with pytest.raises(PermissionError):       # still RULE-2 gated when locked
+        R._reserve_eval_frame(df, lock)
+
+
+def test_reserve_trades_despite_holdout_shorter_than_warmup(tmp_path):
+    """The bug: post-cutoff slice (< WINDOW bars) can't warm the rolling window, so every
+    candidate produced 0 trades -> false DEAD. With warmup, the strategy trades OOS."""
+    import math
+    import os
+
+    import yaml
+
+    from maker.screen import WINDOW
+    cfg = yaml.safe_load(open(os.path.join("config", "config.yaml")))
+    cfg["strategy"]["regime_filter_enabled"] = False
+    cfg["trading"]["entry_start_time"] = ""; cfg["trading"]["entry_end_time"] = ""
+    cfg["costs"]["product"] = "delivery"
+
+    def series(n=1400, phase=0.0):
+        close = [100 + 30 * math.sin(i / 15 + phase) + i * 0.08 for i in range(n)]
+        return pd.DataFrame({"timestamp": pd.date_range("2019-01-01", periods=n, freq="D"),
+                             "open": close, "high": [c + 1 for c in close],
+                             "low": [c - 1 for c in close], "close": close,
+                             "volume": [100000] * n})
+    df = series()
+    # cutoff leaves ~120 post-cutoff bars — FAR under WINDOW, so the old post-only slice
+    # would give 0 trades on every candidate.
+    cutoff = str(pd.to_datetime(df["timestamp"].iloc[-120]).date())
+    assert (pd.to_datetime(df["timestamp"]) >= pd.to_datetime(cutoff)).sum() < WINDOW
+    lock = R.write_lock(cutoff, ["AAA", "BBB"], path=str(tmp_path / "reserve_lock.json"))
+    reg = Registry(str(tmp_path / "trials.db"))
+    c = make_candidate("long", {
+        "setup": ("nday_extreme", {"lookback": 50, "side": "high"}),
+        "trigger": ("breakout_close", {"of": "setup_level"}),
+        "exit": ("atr_trail", {"mult": 4, "period": 14})})
+    status, m = R.evaluate_once(c, family_id(c), {"AAA": df, "BBB": series(1400, phase=1.3)},
+                                lock, reg, n_effective=50, cfg=cfg)
+    assert m["trades"] > 0, "warmup fix failed — reserve still produces 0 trades"

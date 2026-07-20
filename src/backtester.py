@@ -19,9 +19,9 @@ from typing import Optional
 
 import pandas as pd
 
-from src.costs import estimate_intraday_costs, trade_leg_values
+from src.costs import estimate_costs, trade_leg_values
 from src.logger import get_logger
-from src.strategy import generate_signal, market_regime
+from src.strategy import _atr, generate_signal, market_regime
 
 logger = get_logger("backtester")
 
@@ -96,6 +96,8 @@ class _OpenPosition:
     target: float
     entry_time: pd.Timestamp
     prev_close: float  # previous candle close, used for trailing SL
+    peak: float = 0.0  # best close since entry (ATR trailing)
+    atr: float = 0.0   # ATR at entry (fallback for ATR trailing)
 
 
 class Backtester:
@@ -118,6 +120,12 @@ class Backtester:
         bt = cfg.get("backtest", {})
         self._fill_mode = bt.get("fill_mode", "close")
         self._bt_slippage = bt.get("slippage_pct", 0.0)
+        # Exit trailing: "pct" (default, risk-config % trailing) or "atr" (ratchet the
+        # stop by peak ∓ mult×ATR each bar — mirrors the live swing sleeve's trailing).
+        self._trailing_mode = bt.get("trailing_mode", "pct")   # "pct" | "atr" | "none"
+        self._trail_atr_mult = bt.get("trailing_atr_mult", 6.0)
+        # Execution slippage applied to BOTH entry and exit fills (stress-test knob).
+        self._exec_slip = bt.get("exec_slippage_pct", 0.0) / 100
 
     # ── Public API ────────────────────────────────────────────────────────────
 
@@ -164,7 +172,10 @@ class Backtester:
                 pos = open_pos[sym]
 
                 if not halted:
-                    self._update_trailing(pos)
+                    if self._trailing_mode == "atr":
+                        self._update_atr_trailing(pos, candles[sym], i)
+                    elif self._trailing_mode != "none":     # "none" = fixed target/stop
+                        self._update_trailing(pos)
 
                 exit_price, reason = self._check_intrabar_exit(pos, row)
                 if exit_price is not None:
@@ -212,13 +223,32 @@ class Backtester:
                     continue
                 # Honest fills (SCRUM-82): next-candle open instead of signal close.
                 entry_price = signal.entry_price
+                ref = df.iloc[i]["close"]                # market price at signal
+                is_buy = signal.direction == "BUY"
                 if self._fill_mode == "next_open":
                     if i + 1 >= len(df):
                         continue  # no next candle to fill against
                     nxt = df.iloc[i + 1]["open"]
                     slip = self._bt_slippage / 100
-                    entry_price = round(nxt * (1 + slip) if signal.direction == "BUY"
+                    entry_price = round(nxt * (1 + slip) if is_buy
                                         else nxt * (1 - slip), 2)
+                else:
+                    # A limit set away from market (BUY below / SELL above) must be
+                    # CROSSED by a later candle to fill — mirrors live realistic_fills.
+                    # Without this, a buy-limit 5% under market fills at a phantom
+                    # price and manufactures a fake edge (bb_mean_reversion artifact).
+                    is_limit = (is_buy and entry_price < ref) or (not is_buy and entry_price > ref)
+                    if is_limit:
+                        if i + 1 >= len(df):
+                            continue
+                        nrow = df.iloc[i + 1]
+                        crossed = ((is_buy and nrow["low"] <= entry_price)
+                                   or (not is_buy and nrow["high"] >= entry_price))
+                        if not crossed:
+                            continue  # limit never traded next bar — no fill
+                if self._exec_slip:                          # worsen the entry fill
+                    entry_price = round(entry_price * (1 + self._exec_slip) if is_buy
+                                        else entry_price * (1 - self._exec_slip), 2)
                 qty = self._calculate_quantity(entry_price, signal.stop_loss)
                 if qty <= 0:
                     continue
@@ -229,6 +259,7 @@ class Backtester:
                     entry_price=entry_price, stop_loss=signal.stop_loss,
                     target=signal.target, entry_time=ts,
                     prev_close=entry_price,
+                    peak=entry_price, atr=_atr(win_df, 14),
                 )
                 trades_today += 1
                 break  # one entry per cycle
@@ -262,6 +293,20 @@ class Backtester:
             if row["low"] <= pos.target:
                 return pos.target, "target_hit"
         return None, ""
+
+    def _update_atr_trailing(self, pos: _OpenPosition, df: pd.DataFrame, i: int) -> None:
+        """Ratchet the stop by peak ∓ mult×ATR each bar — mirrors the live swing
+        sleeve's ATR trailing stop (SwingEngine._manage_exits). ATR recomputed on
+        the window up to the current bar; the stop only ever tightens."""
+        atr = _atr(df.iloc[:i + 1], 14) or pos.atr
+        close = float(df.iloc[i]["close"])
+        m = self._trail_atr_mult
+        if pos.direction == "BUY":
+            pos.peak = max(pos.peak, close)
+            pos.stop_loss = max(pos.stop_loss, round(pos.peak - m * atr, 2))
+        else:
+            pos.peak = min(pos.peak or close, close)
+            pos.stop_loss = min(pos.stop_loss, round(pos.peak + m * atr, 2))
 
     def _update_trailing(self, pos: _OpenPosition) -> None:
         """Mirror PositionManager.update_trailing_sl using previous candle close."""
@@ -307,13 +352,16 @@ class Backtester:
         return fallback
 
     def _close(self, trades, open_pos, pos, exit_price, ts, reason) -> float:
+        if self._exec_slip:                          # worsen the exit fill
+            exit_price = round(exit_price * (1 - self._exec_slip) if pos.direction == "BUY"
+                               else exit_price * (1 + self._exec_slip), 2)
         if pos.direction == "BUY":
             gross = (exit_price - pos.entry_price) * pos.quantity
         else:
             gross = (pos.entry_price - exit_price) * pos.quantity
         buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
                                          exit_price, pos.quantity)
-        costs = estimate_intraday_costs(buy_v, sell_v, self._cfg)
+        costs = estimate_costs(buy_v, sell_v, self._cfg)
         pnl = round(gross - costs, 2)
         trades.append(BacktestTrade(
             symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,

@@ -17,9 +17,18 @@ def test_unvalidated_blocked_live_but_usable_in_backtest():
     assert param_set_for(m, Regime.STRONG_TREND_UP, "backtest") is not None
 
 
-def test_supertrend_validated_for_paper():
-    # supertrend was seeded + validated from the TCS walk-forward -> usable in paper
+def test_supertrend_benched_after_walkforward():
+    # supertrend BENCHED 2026-07-15: the TCS-seeded edge failed a broader
+    # walk-forward (OOS PF 1.00) -> validated:false -> blocked live/paper, research only.
     m = load_strategy_dir("strategies")["supertrend"]
+    assert param_set_for(m, Regime.STRONG_TREND_UP, "live") is None
+    assert param_set_for(m, Regime.STRONG_TREND_UP, "paper") is None
+    assert param_set_for(m, Regime.STRONG_TREND_UP, "backtest") is not None
+
+
+def test_donchian_validated_for_paper():
+    # donchian is the one walk-forward-validated edge -> usable in paper trend regimes
+    m = load_strategy_dir("strategies")["donchian_trend_tsl"]
     assert param_set_for(m, Regime.STRONG_TREND_UP, "paper") is not None
     assert param_set_for(m, Regime.RANGE, "paper") is None       # disabled in range
 

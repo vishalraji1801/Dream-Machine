@@ -1,0 +1,14 @@
+name: index_dip_reversion
+# S-33 · BENCHED 2026-07-16. Passed under the intraday cost model (blue-chip OOS PF
+# 1.29) but FAILED under real DELIVERY (CNC) costs: OOS PF 1.17 (below the 1.2 bar).
+# validated:false => not traded. Its high turnover (184 trades) makes it especially
+# cost-sensitive — re-test if entries can be made more selective.
+regime_param_sets:
+  STRONG_TREND_UP:   {idx_dip_pct_min: 1.0, idx_atr_mult: 3.0, validated: false, oos_ref: delivery_cost_fail_pf1.17}
+  RANGE:             {idx_dip_pct_min: 1.0, idx_atr_mult: 3.0, validated: false, oos_ref: delivery_cost_fail_pf1.17}
+  STRONG_TREND_DOWN: {enabled: false}
+  QUIET:             {enabled: false}
+  default:           {enabled: false}
+regime_fit:
+  STRONG_TREND_UP:   {pf: 1.17, trades: 184, source: walkforward_bluechip_delivery}
+  RANGE:             {pf: 1.17, trades: 184, source: walkforward_bluechip_delivery}

@@ -1,0 +1,12 @@
+name: ma_pullback
+# S-15 · BENCHED 2026-07-16. Passed under the intraday cost model (OOS PF 1.20) but
+# FAILED under real DELIVERY (CNC) costs: OOS PF 0.99, net -Rs.3,563 — it loses money
+# once swing STT (0.2% round trip) is charged. validated:false => not traded.
+regime_param_sets:
+  STRONG_TREND_UP:   {ma_r_multiple: 3.0, validated: false, oos_ref: delivery_cost_fail_pf0.99}
+  STRONG_TREND_DOWN: {enabled: false}
+  RANGE:             {enabled: false}
+  QUIET:             {enabled: false}
+  default:           {enabled: false}
+regime_fit:
+  STRONG_TREND_UP:   {pf: 0.99, trades: 289, source: walkforward_bluechip_delivery}

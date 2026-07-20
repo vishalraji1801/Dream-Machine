@@ -1,0 +1,17 @@
+name: volatility_contraction_breakout
+# S-21 · Bollinger-width squeeze -> range break. VALIDATED by walk-forward OOS on
+# liquid blue-chips (RELIANCE/TCS/INFY/HCLTECH, ~10yr daily): pctile 15 / range 10
+# -> OOS PF 1.91, 77 trades, 69% win, -21% degradation (OOS BETTER than in-sample)
+# — the strongest edge in the project. Breakout character -> enabled where coils
+# expand (trends + range); disabled in QUIET (no expansion). Exit = signal's fixed
+# stop (opposite boundary) / R-target — same as validated (no trailing override).
+regime_param_sets:
+  STRONG_TREND_UP:   {vcb_width_pctile: 15, vcb_range_bars: 10, validated: true, oos_ref: walkforward_bluechip_2026-07-16}
+  STRONG_TREND_DOWN: {vcb_width_pctile: 15, vcb_range_bars: 10, validated: true, oos_ref: walkforward_bluechip_2026-07-16}
+  RANGE:             {vcb_width_pctile: 15, vcb_range_bars: 10, validated: true, oos_ref: walkforward_bluechip_2026-07-16}
+  QUIET:             {enabled: false}
+  default:           {vcb_width_pctile: 15, vcb_range_bars: 10, validated: true, oos_ref: walkforward_bluechip_2026-07-16}
+regime_fit:
+  STRONG_TREND_UP:   {pf: 1.91, trades: 77, source: walkforward_bluechip_10y}
+  STRONG_TREND_DOWN: {pf: 1.91, trades: 77, source: walkforward_bluechip_10y}
+  RANGE:             {pf: 1.91, trades: 77, source: walkforward_bluechip_10y}

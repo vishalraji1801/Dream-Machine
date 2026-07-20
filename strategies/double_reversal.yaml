@@ -1,0 +1,15 @@
+name: double_reversal
+# S-19 · BENCHED 2026-07-17. Looked good on one walk-forward (1.52) but the upgraded
+# gauntlet exposed it as a lucky spike: plateau just 1/6 combos, and blue-chip DELIVERY
+# re-confirmation gave OOS PF 1.06 (90% degradation), swinging 1.06–1.37 across
+# reasonable configs = not robust. validated:false => not traded.
+regime_param_sets:
+  RANGE:             {db_tol_pct: 1.0, db_lookback: 40, validated: false, oos_ref: gauntlet_fragile_pf1.06}
+  QUIET:             {db_tol_pct: 1.0, db_lookback: 40, validated: false, oos_ref: gauntlet_fragile_pf1.06}
+  HIGH_VOL_CHOP:     {db_tol_pct: 1.0, db_lookback: 40, validated: false, oos_ref: gauntlet_fragile_pf1.06}
+  STRONG_TREND_UP:   {enabled: false}
+  STRONG_TREND_DOWN: {enabled: false}
+  default:           {enabled: false}
+regime_fit:
+  RANGE:             {pf: 1.06, trades: 29, source: bluechip_delivery_reconfirm}
+  QUIET:             {pf: 1.06, trades: 29, source: bluechip_delivery_reconfirm}

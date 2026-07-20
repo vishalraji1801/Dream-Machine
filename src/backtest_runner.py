@@ -70,7 +70,9 @@ def run_strategies(cfg: dict, store, symbols: list[str], strategies: list[str],
 
 def store_timeframes(store, symbols: list[str]) -> list[str]:
     seen = []
-    for tf in ("1min", "5min", "15min", "30min", "1hr"):
+    # include 'day' so the daily/swing strategies (donchian, bb) are actually
+    # evaluated — their edge lives on daily bars, not intraday.
+    for tf in ("1min", "5min", "15min", "30min", "1hr", "day"):
         if any(store.candle_count(s, tf) > 0 for s in symbols):
             seen.append(tf)
     return seen

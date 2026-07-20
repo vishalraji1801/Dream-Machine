@@ -15,10 +15,11 @@ import itertools
 from maker.bar import pf_required
 from maker.blocks import BLOCKS
 from maker.grammar import make_candidate
-from maker.screen import WINDOW, screen_candidate
+from maker.screen import WINDOW, oos_metrics, screen_candidate
 
 MIN_TRADES = 20
 PLATEAU_MIN_PF = 1.2
+OOS_FRAC = 0.7                                     # in-sample / out-of-sample split point
 
 
 def tunable_axes(candidate) -> list:
@@ -47,19 +48,23 @@ def variants(candidate, cap: int = 24) -> list:
     return out
 
 
-def _time_split(candles: dict, frac: float = 0.7):
-    ins, oos = {}, {}
+def _time_split(candles: dict, frac: float = OOS_FRAC):
+    """In-sample frames (first `frac`) + each symbol's OOS-start timestamp. The OOS test no
+    longer slices the holdout off with no history (which discarded the first ~WINDOW bars,
+    or ALL trades when the holdout was short) — it warms up on the in-sample bars and
+    scores only trades entered on/after the split (see maker.screen.oos_metrics)."""
+    ins, oos_start = {}, {}
     for s, df in candles.items():
         cut = int(len(df) * frac)
         ins[s] = df.iloc[:cut].reset_index(drop=True)
-        oos[s] = df.iloc[cut:].reset_index(drop=True)
-    return ins, oos
+        oos_start[s] = df.iloc[cut]["timestamp"]
+    return ins, oos_start
 
 
 def run_gauntlet(candidate, candles: dict, cfg: dict, registry, family: str,
                  n_effective: int, window: int = WINDOW) -> tuple[bool, object, dict]:
     bar = pf_required(n_effective)
-    ins, oos = _time_split(candles)
+    ins, oos_start = _time_split(candles)
     vs = variants(candidate)
 
     scored = []                                   # in-sample PF per variant (plateau)
@@ -71,7 +76,9 @@ def run_gauntlet(candidate, candles: dict, cfg: dict, registry, family: str,
     best_v, _best_m = max(scored,
                           key=lambda t: t[1]["pf"] if t[1]["trades"] >= MIN_TRADES else 0)
 
-    _, _, oos_m = screen_candidate(best_v, oos, cfg, window=window)   # OOS test of the winner
+    # OOS test of the winner WITH warmup: replay the full frame, score only post-split
+    # trades. best_v is already selected, so warming up on in-sample bars is not leakage.
+    oos_m = oos_metrics(best_v, candles, oos_start, cfg, window=window)
     passed = (oos_m["pf"] >= bar and oos_m["trades"] >= MIN_TRADES and oos_m["net"] > 0
               and plateau_pass >= max(1, len(vs) // 2))
     metrics = {"oos_pf": oos_m["pf"], "oos_trades": oos_m["trades"], "oos_net": oos_m["net"],

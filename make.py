@@ -23,6 +23,7 @@ def _registry():
 
 def cmd_status(_args) -> int:
     from maker.bar import pf_required
+    from maker.reserve import effective_reserve_table
     reg = _registry()
     n = reg.n_effective()
     print(f"N_effective (distinct families at screen+): {n}")
@@ -30,7 +31,12 @@ def cmd_status(_args) -> int:
     print("stage counts:")
     for stage in ("GEN_REJECT", "SCREEN", "GAUNTLET", "RESERVE", "PAPER"):
         print(f"  {stage:11} {reg.count(stage=stage)}")
-    print(f"  {'ALIVE':11} {reg.count(status='ALIVE')}")
+    # Effective reserve verdicts honour VOID supersessions (append-only corrections),
+    # so a bug's invalidated DEAD no longer counts and a re-tested family shows its real
+    # status. This is the authoritative ALIVE count, not the raw ALIVE row count.
+    verdicts = effective_reserve_table(reg.rows())
+    alive = sorted(f for f, s in verdicts.items() if s == "ALIVE")
+    print(f"  {'ALIVE':11} {len(alive)}" + (f"  {alive}" if alive else ""))
     return 0
 
 

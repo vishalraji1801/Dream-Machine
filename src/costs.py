@@ -54,6 +54,50 @@ def estimate_intraday_costs(buy_value: float, sell_value: float, cfg: dict) -> f
     return total
 
 
+_DELIVERY_DEFAULTS = {
+    "enabled": True,
+    "brokerage_pct": 0.0,        # Zerodha equity DELIVERY (CNC) is brokerage-free
+    "stt_pct": 0.1,              # STT 0.1% on BOTH the buy and sell legs
+    "exchange_txn_pct": 0.00297,
+    "sebi_pct": 0.0001,
+    "stamp_buy_pct": 0.015,      # stamp duty 0.015% on the buy leg (vs 0.003% intraday)
+    "dp_charge": 15.34,          # flat CDSL+broker DP debit per sell (incl. GST approx)
+    "gst_pct": 18.0,
+}
+
+
+def estimate_delivery_costs(buy_value: float, sell_value: float, cfg: dict) -> float:
+    """
+    Estimated total charges for one DELIVERY (CNC) round trip — the swing sleeve.
+    Differs materially from intraday: brokerage is free, but STT is 0.1% on BOTH
+    legs (vs 0.025% sell-only intraday), stamp is higher, and a flat DP charge
+    applies on the sell. Net effect: delivery costs ~3x intraday per round trip.
+    Overrides read from cfg['costs']['delivery'].
+    """
+    c = {**_DELIVERY_DEFAULTS, **cfg.get("costs", {}).get("delivery", {})}
+    if not c["enabled"]:
+        return 0.0
+    turnover = buy_value + sell_value
+    brokerage = turnover * c["brokerage_pct"] / 100
+    stt = turnover * c["stt_pct"] / 100                      # both legs
+    exchange = turnover * c["exchange_txn_pct"] / 100
+    sebi = turnover * c["sebi_pct"] / 100
+    stamp = buy_value * c["stamp_buy_pct"] / 100
+    dp = c["dp_charge"]
+    gst = (brokerage + exchange + sebi + dp) * c["gst_pct"] / 100
+    return round(brokerage + stt + exchange + sebi + stamp + dp + gst, 2)
+
+
+def estimate_costs(buy_value: float, sell_value: float, cfg: dict) -> float:
+    """Dispatch to the delivery (CNC/swing) or intraday (MIS) cost model based on
+    cfg['costs']['product']. Defaults to 'intraday' for backward compatibility;
+    config.yaml sets 'delivery' since the bot is swing-only."""
+    product = str(cfg.get("costs", {}).get("product", "intraday")).lower()
+    if product in ("delivery", "cnc"):
+        return estimate_delivery_costs(buy_value, sell_value, cfg)
+    return estimate_intraday_costs(buy_value, sell_value, cfg)
+
+
 def trade_leg_values(direction: str, entry_price: float, exit_price: float,
                      quantity: int) -> tuple[float, float]:
     """

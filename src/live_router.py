@@ -98,13 +98,19 @@ class LiveRouter:
     def active(self) -> list:
         return self._active
 
-    def signals_for(self, symbol: str, df) -> list:
-        """Signals from every active strategy on `symbol` (non-HOLD only).
-        Returns [(signal, active_strategy)], highest weight first."""
+    def decisions_for(self, symbol: str, df) -> list:
+        """Every active strategy's decision on `symbol`, HOLD included, highest
+        weight first. Returns [(signal, active_strategy)] — used for the per-cycle
+        visibility log so you can see what each strategy decided, not just fills."""
         out = []
         for a in sorted(self._active, key=lambda x: x.weight, reverse=True):
             scfg = {**self.cfg["strategy"], **a.param_set.params, "name": a.name}
             sig = generate_signal(symbol, df, scfg)
-            if sig.direction != "HOLD":
-                out.append((sig, a))
+            out.append((sig, a))
         return out
+
+    def signals_for(self, symbol: str, df) -> list:
+        """Signals from every active strategy on `symbol` (non-HOLD only).
+        Returns [(signal, active_strategy)], highest weight first."""
+        return [(s, a) for s, a in self.decisions_for(symbol, df)
+                if s.direction != "HOLD"]

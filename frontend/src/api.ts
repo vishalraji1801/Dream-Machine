@@ -150,10 +150,17 @@ export interface BacktestJob {
   timeframe?: string;
 }
 
+export interface SwingEdge {
+  name: string;
+  validated: boolean;
+  pf: number | null;
+}
 export interface StrategiesResp {
   registered: string[];
   active: string;
   allowed: string[];
+  intraday_enabled: boolean;
+  swing: { enabled: boolean; edges: SwingEdge[] };
 }
 
 // ── calls ────────────────────────────────────────────────────────────────────

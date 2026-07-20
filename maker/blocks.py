@@ -79,6 +79,15 @@ _LIBRARY = [
                                         "cluster_tol_atr": [0.25, 0.5], "zone_atr": [0.25, 0.5]},
        "Repeated swing-pivot touches mark a real S/R shelf; more and more-recent touches "
        "make it stronger (highest overfitting risk — its params count against the budget)."),
+    _b("setup", "double_bottom", {"swing_n": [5, 10], "tol_pct": [1.0, 2.0]},
+       "Two comparable swing lows with a peak between them mark a double bottom — a tested "
+       "support that reverses on the neckline break; confirmed pivots avoid look-ahead."),
+    _b("setup", "inv_head_shoulders", {"swing_n": [5, 10], "shoulder_tol_pct": [3.0, 5.0]},
+       "Inverse head-and-shoulders: three swing lows, the middle deepest, shoulders roughly "
+       "level — a distribution-to-accumulation reversal that triggers on the neckline break."),
+    _b("setup", "fib_pullback", {"swing_n": [5, 10], "level": [500, 618]},
+       "A pullback to the 50/61.8% Fibonacci retracement of the last confirmed up-swing is "
+       "the harmonic/ABCD entry — buying the measured discount before trend resumption."),
     # ── trigger ─────────────────────────────────────────────────────────────
     _b("trigger", "breakout_close", {"of": ["setup_level", "prior_day_high", "prior_day_low"]},
        "Requiring a close beyond the level filters intrabar fake-outs."),
@@ -86,6 +95,9 @@ _LIBRARY = [
        "A limit below market buys the pullback at a defined price instead of chasing."),
     _b("trigger", "confirm_candle", {"accept": [("hammer_white", "doji")], "above_vwap": [True]},
        "A confirmation candle above VWAP demands the buyers show up before entry."),
+    _b("trigger", "bullish_reversal_candle", {"pattern": ["engulfing", "morning_star"]},
+       "A bullish engulfing or morning-star reversal candle on the entry bar demands the "
+       "buyers decisively take control before committing capital."),
     _b("trigger", "resume_new_high", {"within_bars": [3, 5]},
        "Entering only when price resumes to a new high confirms the pullback is over."),
     # ── exit ────────────────────────────────────────────────────────────────

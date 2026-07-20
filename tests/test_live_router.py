@@ -25,12 +25,15 @@ def _rangebound(n=150):
     return _index([1000 + (1 if i % 2 else -1) for i in range(n)])   # tiny oscillation
 
 
-def test_router_activates_supertrend_in_strong_trend():
+def test_router_benches_unvalidated_intraday_in_strong_trend():
+    # supertrend BENCHED (validated:false after walk-forward) and orb never had an
+    # edge -> the intraday router activates NOTHING even in a strong trend. Intraday
+    # trades nothing until a validated intraday strategy is added.
     lr = LiveRouter(_cfg(), mode="paper")
     active = lr.step(_uptrend())
     assert lr.regime.regime is Regime.STRONG_TREND_UP
-    assert "supertrend" in [a.name for a in active]           # seeded + validated
-    assert all(a.weight > 0 for a in active)
+    assert "supertrend" not in [a.name for a in active]
+    assert active == []
 
 
 def test_router_sits_out_in_range():

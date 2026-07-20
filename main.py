@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from src.overlay import apply_overlay, load_overlay
 from src.alert_manager import AlertManager
 from src.auth import load_kite_session
-from src.costs import estimate_intraday_costs, trade_leg_values
+from src.costs import estimate_costs, trade_leg_values
 from src.data_fetcher import DataFetcher
 from src.data_streamer import DataStreamer
 from src.event_calendar import EventCalendar
@@ -95,14 +95,28 @@ def startup() -> dict:
     # and streams the whole set; falls back to the watchlist if absent.
     universe_symbols = None
     if cfg.get("universe", {}).get("enabled"):
-        loaded = UniverseBuilder(cfg).load_today()
+        ub = UniverseBuilder(cfg)
+        loaded = ub.load_today()
+        if not loaded:
+            # No file for today — build it now from the live session (the bot is
+            # already authenticated). Auto-derives the liquid F&O universe.
+            logger.info("No universe file today — building it now from the live session…")
+            try:
+                loaded = ub.build(kite)
+            except Exception as exc:
+                logger.warning(f"Universe build failed ({exc}) — falling back to watchlist.")
+                loaded = None
         if loaded:
             universe_symbols = [r["symbol"] for r in loaded]
             symbols = list(dict.fromkeys(universe_symbols + symbols))
+            # One WebSocket connection carries up to 3,000 instruments.
+            ws_cap = cfg.get("universe", {}).get("ws_max_symbols", 2900)
+            if len(symbols) > ws_cap:
+                logger.warning(f"Universe {len(symbols)} > ws cap {ws_cap} — truncating.")
+                symbols = symbols[:ws_cap]
             logger.info(f"Dynamic universe active: {len(universe_symbols)} symbols")
         else:
-            logger.warning("universe.enabled but no universe file today — using watchlist. "
-                           "Run build_universe.py pre-market.")
+            logger.warning("universe.enabled but no universe file today — using watchlist.")
 
     if cfg["strategy"].get("regime_filter_enabled"):
         symbols.append(cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
@@ -119,13 +133,29 @@ def startup() -> dict:
         candle_builder = TickCandleBuilder(interval_seconds=tf_seconds,
                                            max_bars=feed.get("max_bars", 120))
         if feed.get("seed_on_start", True):
+            # For a large dynamic universe, seeding every symbol at startup is
+            # hundreds of REST calls. Cap it: always seed the regime index +
+            # watchlist (needed immediately), and up to seed_max_symbols total.
+            # Scanner top-N candidates that aren't seeded get REST-fallback candles
+            # on first signal, then warm up from live ticks.
+            seed_cap = feed.get("seed_max_symbols", 0)  # 0 = seed all
+            must_seed = set(cfg["trading"]["watchlist"])
+            if cfg["strategy"].get("regime_filter_enabled"):
+                must_seed.add(cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
+            if seed_cap and len(symbols) > seed_cap:
+                extras = [s for s in symbols if s not in must_seed]
+                seed_list = [s for s in symbols if s in must_seed] + \
+                    extras[:max(0, seed_cap - len(must_seed))]
+            else:
+                seed_list = symbols
             seeded = 0
-            for sym in symbols:
+            for sym in seed_list:
                 df = fetcher.get_candles(sym, lookback_days=feed.get("seed_lookback_days", 3))
                 if df is not None and not df.empty:
                     if candle_builder.seed(sym, df, now_epoch=time.time()):
                         seeded += 1
-            logger.info(f"Candle builder seeded from REST: {seeded}/{len(symbols)} symbols")
+            logger.info(f"Candle builder seeded from REST: {seeded}/{len(seed_list)} "
+                        f"symbols (of {len(symbols)} streamed)")
 
     streamer = DataStreamer(
         kite.api_key, kite.access_token, fetcher._instruments,
@@ -225,7 +255,11 @@ def trading_cycle(ctx: dict, allow_entries: bool = True) -> None:
         logger.warning(f"Circuit breaker active: {reason} — skipping cycle")
         return
     _manage_open_positions(ctx)
-    if allow_entries:
+    intraday_on = ctx["cfg"].get("intraday", {}).get("enabled", True)
+    if not intraday_on:
+        pass  # intraday sleeve SUSPENDED (swing-only) — no 5-min entries; swing
+              # sleeve runs via run_daily. Open positions above are still managed.
+    elif allow_entries:
         _scan_entries(ctx)
     else:
         logger.info("Paused — entry scan skipped")
@@ -272,7 +306,7 @@ def _reconcile_positions(ctx: dict) -> None:
             exit_price = bp["sell_price"] if pos.direction == "BUY" else bp["buy_price"]
             buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
                                              exit_price, pos.quantity)
-            costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+            costs = estimate_costs(buy_v, sell_v, ctx["cfg"])
             pnl = pos.unrealized_pnl(exit_price) - costs
             positions.remove_position(pos.symbol)
             ctx["risk"].record_pnl(pnl)
@@ -450,29 +484,41 @@ def _router_scan(ctx: dict, candidates: list, quotes: dict) -> None:
 
     margin = _get_margin(ctx)
     open_symbols = {p.symbol for p in positions.get_open_positions()}
+    decisions = []          # per-symbol token for the visibility log
+    entered = False         # at most one entry per cycle (position-limit safety)
     for symbol in candidates:
         if symbol not in quotes or not _spread_ok(symbol, quotes[symbol], cfg):
+            decisions.append(f"{symbol}:skip(spread/quote)")
             continue
         df = _get_candles(ctx, symbol)
         if df is None or df.empty:
+            decisions.append(f"{symbol}:skip(no-data)")
             continue
         sigs = router.signals_for(symbol, df)
         if not sigs:
+            decisions.append(f"{symbol}:HOLD")         # strategy ran, no trigger
             continue
         signal, astrat = sigs[0]                      # highest-weight active strategy
+        tag = f"{symbol}:{signal.direction}({astrat.name})"
+        if entered:                                    # already filled one this cycle
+            decisions.append(f"{tag}→deferred(1 entry/cycle)")
+            continue
         qty = int(risk.calculate_quantity(signal.entry_price, signal.stop_loss) * astrat.weight)
         if qty <= 0:
+            decisions.append(f"{tag}→REFUSED(zero_quantity)")
             _db_signal(ctx, symbol, signal.direction, taken=False,
                        reason="zero_quantity", strategy=astrat.name)
             continue
         order_value = signal.entry_price * qty
         ok, reason = risk.check_pre_trade(order_value, margin, positions.open_count())
         if not ok:
+            decisions.append(f"{tag}→REFUSED({reason})")
             _db_signal(ctx, symbol, signal.direction, taken=False, reason=reason, strategy=astrat.name)
             _alert_signal(ctx, symbol, signal, f"SKIPPED: {reason}")
             continue
         sector_ok, sector_reason = risk.check_sector_cap(symbol, list(open_symbols))
         if not sector_ok:
+            decisions.append(f"{tag}→REFUSED({sector_reason})")
             _db_signal(ctx, symbol, signal.direction, taken=False, reason=sector_reason, strategy=astrat.name)
             continue
         # tag the entry so the exit records strategy + regime (feeds the learned map)
@@ -481,7 +527,9 @@ def _router_scan(ctx: dict, candidates: list, quotes: dict) -> None:
         _alert_signal(ctx, symbol, signal,
                       f"ENTERING [{astrat.name} w{astrat.weight:.2f} {router.regime.regime.value}]")
         _execute_entry(ctx, symbol, signal, qty)
-        break                                          # one entry per cycle
+        decisions.append(f"{tag}→ENTERED x{qty}")
+        entered = True                                 # keep scanning to log the rest
+    logger.info("router decisions: " + " | ".join(decisions))
 
 
 def _within_entry_window(cfg: dict) -> bool:
@@ -691,7 +739,7 @@ def _execute_exit(ctx: dict, pos, ltp: float, reason: str) -> None:
 
     buy_v, sell_v = trade_leg_values(removed.direction, removed.entry_price,
                                      exit_price, removed.quantity)
-    costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+    costs = estimate_costs(buy_v, sell_v, ctx["cfg"])
     pnl = removed.unrealized_pnl(exit_price) - costs
     risk.record_pnl(pnl)
     risk.record_trade()
@@ -796,7 +844,7 @@ def eod_square_off(ctx: dict) -> None:
             exit_price = ltp
         buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price,
                                          exit_price, pos.quantity)
-        costs = estimate_intraday_costs(buy_v, sell_v, ctx["cfg"])
+        costs = estimate_costs(buy_v, sell_v, ctx["cfg"])
         pnl = pos.unrealized_pnl(exit_price) - costs
         risk.record_pnl(pnl)
         positions.remove_position(pos.symbol)
