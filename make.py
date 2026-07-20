@@ -40,40 +40,66 @@ def cmd_status(_args) -> int:
     return 0
 
 
-def cmd_generate(args) -> int:
-    from src.backtest_store import BacktestStore
+INTRADAY_TIMEFRAMES = ["1min", "5min", "15min", "30min", "1hr"]
+
+
+def _timeframes(args, intraday) -> list:
+    if not intraday:
+        return ["day"]
+    if args.timeframe in ("day", "all"):
+        return list(INTRADAY_TIMEFRAMES)
+    return [t.strip() for t in args.timeframe.split(",")]        # single or comma-list
+
+
+def _run_one_tf(args, store, lock, tf, intraday) -> dict:
+    """One full generate->screen->gauntlet->reserve campaign on a single timeframe."""
     cfg = yaml.safe_load(open(os.path.join(ROOT, "config", "config.yaml")))
     cfg["strategy"]["regime_filter_enabled"] = False
-    cfg["trading"]["entry_start_time"] = ""; cfg["trading"]["entry_end_time"] = ""
-    cfg["costs"]["product"] = "delivery"
-    store = BacktestStore(os.path.join(ROOT, "data_cache", "backtest_data.db"))
-    syms = [s for s in store.symbols() if store.candle_count(s, "day") > 1000][:args.symbols]
+    if intraday:
+        # keep the session entry window + square-off (backtester needs them for MIS); costs
+        # switch to intraday and the per-candidate screen adds execution slippage.
+        cfg["costs"]["product"] = "intraday"
+        product, min_bars = "intraday", 2000
+    else:
+        cfg["trading"]["entry_start_time"] = ""; cfg["trading"]["entry_end_time"] = ""
+        cfg["costs"]["product"] = "delivery"
+        product, min_bars = "delivery", 1000
+    syms = [s for s in store.symbols() if store.candle_count(s, tf) > min_bars][:args.symbols]
+    if lock is not None:
+        syms = [s for s in syms if s in set(lock["symbols"])]
     if not syms:
-        print("No daily history in the store. Fetch the F&O daily universe first.")
-        return 1
+        print(f"[{tf}] no history >{min_bars} bars in the store — skipped.")
+        return {}
+    candles = {s: store.get_candles(s, tf) for s in syms}
+    tf_stamp = tf if intraday else None      # stamp intraday candidates with their timeframe
+    print(f"Campaign [{args.sleeve}/{tf}]: {args.max_trials} candidates, seed {args.seed}, "
+          f"{len(syms)} symbols, workers {args.workers}, reserve {'ON' if lock else 'off'}...")
+    if args.workers > 1:                      # process-parallel; byte-identical to serial
+        from maker.parallel_campaign import run_campaign_parallel
+        return run_campaign_parallel(args.max_trials, args.seed, candles, cfg, _registry(),
+                                     lock=lock, workers=args.workers, product=product,
+                                     sleeve=args.sleeve, timeframe=tf_stamp)
+    from maker.campaign import run_campaign
+    return run_campaign(args.max_trials, args.seed, candles, cfg, _registry(), lock=lock,
+                        product=product, sleeve=args.sleeve, timeframe=tf_stamp)
 
-    # Load the reserve lock if present: only then can a candidate be CERTIFIED (a gauntlet
-    # survivor gets its single-shot reserve exam). Without a lock the funnel runs but tops
-    # out at the gauntlet (reserve_run stays 0) — fine for a dry generation, not a hunt.
+
+def cmd_generate(args) -> int:
+    from src.backtest_store import BacktestStore
+    intraday = args.sleeve == "intraday"
+    store = BacktestStore(os.path.join(ROOT, "data_cache", "backtest_data.db"))
     lock = None
     lock_path = os.path.join(ROOT, "data_cache", "reserve_lock.json")
     if os.path.exists(lock_path):
         from maker.reserve import load_lock
         lock = load_lock(lock_path)
-        syms = [s for s in syms if s in set(lock["symbols"])]     # only locked names
         print(f"Reserve lock active: cutoff {lock['cutoff_date']}, {len(lock['symbols'])} names.")
-
-    candles = {s: store.get_candles(s, "day") for s in syms}
-    print(f"Campaign: {args.max_trials} candidates, seed {args.seed}, {len(syms)} symbols, "
-          f"workers {args.workers}, reserve {'ON' if lock else 'off'}...")
-    if args.workers > 1:                 # process-parallel; byte-identical to serial
-        from maker.parallel_campaign import run_campaign_parallel
-        counts = run_campaign_parallel(args.max_trials, args.seed, candles, cfg, _registry(),
-                                       lock=lock, workers=args.workers)
-    else:
-        from maker.campaign import run_campaign
-        counts = run_campaign(args.max_trials, args.seed, candles, cfg, _registry(), lock=lock)
-    print("counts:", counts)
+    tfs = _timeframes(args, intraday)
+    if len(tfs) > 1:
+        print(f"Running {len(tfs)} timeframe hunts: {tfs}")
+    for tf in tfs:
+        counts = _run_one_tf(args, store, lock, tf, intraday)
+        print(f"counts [{tf}]:", counts)
     return 0
 
 
@@ -87,6 +113,10 @@ def main(argv=None) -> int:
     g.add_argument("--symbols", type=int, default=60)
     g.add_argument("--workers", type=int, default=1,
                    help="process-parallel workers (>1 runs the pool; identical results)")
+    g.add_argument("--sleeve", default="swing", choices=["swing", "intraday"],
+                   help="swing (daily/CNC, default) or intraday (MIS, session blocks)")
+    g.add_argument("--timeframe", default="day",
+                   help="candle timeframe (swing: day; intraday: 5min/15min/30min/1hr)")
     for name in ("screen", "gauntlet", "reserve"):
         sub.add_parser(name)
     args = ap.parse_args(argv)

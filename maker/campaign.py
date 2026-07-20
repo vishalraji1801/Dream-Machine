@@ -17,7 +17,8 @@ from maker.screen import WINDOW, fast_screen_candidate
 
 def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
                  lock: dict = None, product: str = "delivery", window: int = None,
-                 time_budget_s: float = None) -> dict:
+                 time_budget_s: float = None, sleeve: str = "swing",
+                 timeframe: str = None) -> dict:
     import time
     window = WINDOW if window is None else window
     started = time.time()
@@ -40,7 +41,8 @@ def run_campaign(n: int, seed: int, candles: dict, cfg: dict, registry,
         if time_budget_s is not None and (time.time() - started) > time_budget_s:
             counts["stopped_on_budget"] = True
             break
-        cand = random_candidate(rng, direction="long" if long_only else rng.choice(["long", "short"]))
+        cand = random_candidate(rng, sleeve=sleeve, timeframe=timeframe,   # intraday: both sides
+                                direction="long" if long_only else rng.choice(["long", "short"]))
         counts["generated"] += 1
         fam = family_id(cand)
 

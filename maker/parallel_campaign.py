@@ -65,7 +65,8 @@ def _eval_worker(task):
 
 def run_campaign_parallel(n: int, seed: int, candles: dict, cfg: dict, registry,
                           lock: dict = None, product: str = "delivery", window: int = None,
-                          workers: int = None, time_budget_s: float = None) -> dict:
+                          workers: int = None, time_budget_s: float = None,
+                          sleeve: str = "swing", timeframe: str = None) -> dict:
     import time
     started = time.time()
     window = WINDOW if window is None else window
@@ -89,8 +90,8 @@ def run_campaign_parallel(n: int, seed: int, candles: dict, cfg: dict, registry,
                       if r["stage"] in EVALUATED_STAGES}          # seed bar from prior search
     plan = []                    # ordered: (index, cand, fam, gen_reject|None, bar|None)
     for k in range(n):
-        cand = random_candidate(rng, direction="long" if long_only
-                                else rng.choice(["long", "short"]))
+        cand = random_candidate(rng, sleeve=sleeve, timeframe=timeframe,   # intraday: both sides
+                                direction="long" if long_only else rng.choice(["long", "short"]))
         counts["generated"] += 1
         fam = family_id(cand)
         ok, reason, detail = constraints.check(cand, product=product, seen_cids=seen)

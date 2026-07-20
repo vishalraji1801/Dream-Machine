@@ -165,12 +165,66 @@ def _is_morning_star(o1, c1, o2, c2, o3, c3):
             and c3 > (o1 + c1) / 2)          # closes back above bar1 midpoint
 
 
+def _is_shooting_star(o, h, l, c):
+    # bearish mirror of the hammer: small body at the BOTTOM of the range with a long upper
+    # wick (buyers pushed up, sellers reclaimed) — a rejection of higher prices.
+    rng = h - l
+    if rng <= 0:
+        return False
+    body = abs(c - o)
+    upper_wick = h - max(o, c)
+    lower_wick = min(o, c) - l
+    return (c <= o                     # red/bearish body
+            and body <= 0.4 * rng      # small real body
+            and upper_wick >= 2 * body # long upper wick
+            and lower_wick <= body)    # little to no lower wick
+
+
+# ── intraday session helpers (the intraday df carries a 'timestamp' column) ────
+# All are computed relative to the CURRENT session (same date as the last bar), so a
+# rolling window that spans several days still measures today's opening range / VWAP.
+
+def _ts(df):
+    return pd.to_datetime(df["timestamp"])
+
+
+def _session_mask(df):
+    d = _ts(df).dt.date
+    return d == d.iloc[-1]
+
+
+def _session_vwap(df):
+    """VWAP of the current session up to the last bar, or None (no volume)."""
+    s = df[_session_mask(df)]
+    vol = s["volume"].astype(float)
+    cv = float(vol.cumsum().iloc[-1]) if len(vol) else 0.0
+    if cv <= 0:
+        return None
+    tp = (s["high"] + s["low"] + s["close"]) / 3
+    return float((tp * vol).cumsum().iloc[-1] / cv)
+
+
+def _parse_hm(s):
+    from datetime import time as _t
+    h, m = s.split(":")
+    return _t(int(h), int(m))
+
+
 # ── block evaluators: (df, params) -> result ──────────────────────────────────
 # regime/setup/trigger return a bool (or a level dict for setups); exits return
 # (stop, target) given (df, entry, direction). Unimplemented -> NotImplementedError.
 
 def _regime_ok(name, params, df):
     last = float(df["close"].iloc[-1])
+    if name == "time_window":                  # intraday: session-of-day filter
+        start, end = params["allow"]
+        return _parse_hm(start) <= _ts(df).iloc[-1].time() <= _parse_hm(end)
+    if name == "skip_open_minutes":            # intraday: avoid the first N minutes
+        s = df[_session_mask(df)]
+        if len(s) == 0:
+            return False
+        mins = (_ts(df).iloc[-1] - _ts(s).iloc[0]).total_seconds() / 60.0
+        return mins >= params["min"]
     if name == "trend_side":
         sma = _sma(df, params["ma"]).iloc[-1]
         if sma != sma:
@@ -323,19 +377,74 @@ def _setup_level(name, params, df):
         if lvl is None:
             return None
         return last if last <= lvl else None
+    # ── intraday setups (section 11.2) ────────────────────────────────────────
+    if name == "opening_range":
+        # the break level of the first `window_min` minutes of TODAY's session.
+        s = df[_session_mask(df)]
+        if len(s) < 2:
+            return None
+        or_end = _ts(s).iloc[0] + pd.Timedelta(minutes=params["window_min"])
+        or_bars = s[_ts(s) < or_end]
+        if len(or_bars) == 0 or len(or_bars) == len(s):     # still inside the OR
+            return None
+        if params["break_side"] == "low":
+            return float(or_bars["low"].min())
+        return float(or_bars["high"].max())                 # "high" / "gap_aligned"
+    if name == "vwap_relation":
+        v = _session_vwap(df)
+        if v is None:
+            return None
+        d = params["min_dist_pct"]
+        st = params["state"]
+        if st == "hold_above":
+            return last if last >= v * (1 + d / 100) else None
+        if st == "break_below":
+            return last if last <= v * (1 - d / 100) else None
+        if st == "reclaim":                                 # crossed up through VWAP
+            prev = float(close.iloc[-2]) if len(close) > 1 else last
+            return last if prev < v <= last else None
+        return None
+    if name == "prior_day_level":
+        d = _ts(df).dt.date
+        prior = d[d < d.iloc[-1]]
+        if prior.empty:
+            return None
+        ps = df[d == prior.iloc[-1]]                         # the previous session
+        lvl = params["level"]
+        if lvl == "pdh":
+            return float(ps["high"].max())
+        if lvl == "pdl":
+            return float(ps["low"].min())
+        return float(ps["close"].iloc[-1])                  # pdc
+    if name == "intraday_flush":
+        pct, mins = params["down_pct_in_min"]
+        w = df[_ts(df) >= _ts(df).iloc[-1] - pd.Timedelta(minutes=mins)]
+        if len(w) < 2:
+            return None
+        ref = float(w["close"].iloc[0])
+        if ref <= 0:
+            return None
+        return last if (ref - last) / ref * 100 >= pct else None
     raise NotImplementedError(f"setup block {name!r} not implemented yet")
 
 
-def _trigger_ok(name, params, df, level):
+def _trigger_ok(name, params, df, level, direction="long"):
     close = df["close"]
     last = float(close.iloc[-1])
-    if name == "breakout_close":
-        return last >= level if level is not None else False
+    short = direction == "short"
+    if name == "breakout_close":                 # break the level in the TRADE direction
+        if level is None:
+            return False
+        return last <= level if short else last >= level
     if name == "limit_below":
         return True                      # limit entry handled by the fill model
-    if name == "resume_new_high":
+    if name == "resume_new_high":                # new extreme in the trade direction
         w = params["within_bars"]
-        return last >= float(df["high"].iloc[-w - 1:-1].max()) if len(df) > w + 1 else False
+        if len(df) <= w + 1:
+            return False
+        if short:
+            return last <= float(df["low"].iloc[-w - 1:-1].min())
+        return last >= float(df["high"].iloc[-w - 1:-1].max())
     if name == "confirm_candle":
         # Require the entry bar to be a bullish reversal candle that closed strong. On
         # daily data VWAP is approximated by the bar midpoint (H+L)/2, so above_vwap
@@ -365,6 +474,33 @@ def _trigger_ok(name, params, df, level):
             o2 = float(df["open"].iloc[-2]); c2 = float(df["close"].iloc[-2])
             o3 = float(df["open"].iloc[-1])
             return _is_morning_star(o1, c1, o2, c2, o3, last)
+        return False
+    # ── intraday triggers (section 11.2) ──────────────────────────────────────
+    if name == "new_extreme_after_pullback":     # new extreme in the trade direction
+        w = params["pullback_bars"]
+        if len(df) < w + 2:
+            return False
+        if short:
+            return last <= float(df["low"].iloc[-w - 1:-1].min())
+        return last >= float(df["high"].iloc[-w - 1:-1].max())
+    if name == "candle_confirm_1m":
+        o = float(df["open"].iloc[-1]); h = float(df["high"].iloc[-1])
+        l = float(df["low"].iloc[-1]); c = last
+        v = _session_vwap(df)
+        if params.get("above_vwap"):             # confirm on the correct side of VWAP
+            if v is None or (c >= v if short else c <= v):
+                return False
+        accept = params["accept"]
+        if short:                                # bearish mirror: shooting star / doji
+            if "hammer_white" in accept and _is_shooting_star(o, h, l, c):
+                return True
+            if "doji" in accept and _is_doji(o, h, l, c):
+                return True
+            return False
+        if "hammer_white" in accept and _is_hammer_white(o, h, l, c):
+            return True
+        if "doji" in accept and _is_doji(o, h, l, c):
+            return True
         return False
     raise NotImplementedError(f"trigger block {name!r} not implemented yet")
 
@@ -412,7 +548,7 @@ def compile(candidate: Candidate) -> Callable:
         level = _setup_level(setup.name, setup.params, df)
         if level is None:
             return _hold(symbol, "no_setup")
-        if not _trigger_ok(trigger.name, trigger.params, df, level):
+        if not _trigger_ok(trigger.name, trigger.params, df, level, direction):
             return _hold(symbol, "no_trigger")
         entry = float(df["close"].iloc[-1])
         stop, target = _exit_levels(exit_b.name, exit_b.params, df, entry, direction)
