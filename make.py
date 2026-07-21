@@ -16,15 +16,15 @@ import yaml
 ROOT = os.path.dirname(os.path.abspath(__file__))
 
 
-def _registry():
+def _registry(db: str = "maker_trials.db"):
     from maker.registry import Registry
-    return Registry(os.path.join(ROOT, "data_cache", "maker_trials.db"))
+    return Registry(os.path.join(ROOT, "data_cache", db))
 
 
-def cmd_status(_args) -> int:
+def cmd_status(args) -> int:
     from maker.bar import pf_required
     from maker.reserve import effective_reserve_table
-    reg = _registry()
+    reg = _registry(getattr(args, "db", "maker_trials.db"))
     n = reg.n_effective()
     print(f"N_effective (distinct families at screen+): {n}")
     print(f"current pf_required:                        {pf_required(max(n, 10))}")
@@ -40,7 +40,9 @@ def cmd_status(_args) -> int:
     return 0
 
 
-INTRADAY_TIMEFRAMES = ["1min", "5min", "15min", "30min", "1hr"]
+# coarse -> fine: the higher timeframes have far fewer bars, so they finish fast; 1min
+# (~90k bars/symbol) runs last and can be stopped early once the pattern is clear.
+INTRADAY_TIMEFRAMES = ["1hr", "30min", "15min", "5min", "1min"]
 
 
 def _timeframes(args, intraday) -> list:
@@ -76,11 +78,11 @@ def _run_one_tf(args, store, lock, tf, intraday) -> dict:
           f"{len(syms)} symbols, workers {args.workers}, reserve {'ON' if lock else 'off'}...")
     if args.workers > 1:                      # process-parallel; byte-identical to serial
         from maker.parallel_campaign import run_campaign_parallel
-        return run_campaign_parallel(args.max_trials, args.seed, candles, cfg, _registry(),
+        return run_campaign_parallel(args.max_trials, args.seed, candles, cfg, _registry(args.db),
                                      lock=lock, workers=args.workers, product=product,
                                      sleeve=args.sleeve, timeframe=tf_stamp)
     from maker.campaign import run_campaign
-    return run_campaign(args.max_trials, args.seed, candles, cfg, _registry(), lock=lock,
+    return run_campaign(args.max_trials, args.seed, candles, cfg, _registry(args.db), lock=lock,
                         product=product, sleeve=args.sleeve, timeframe=tf_stamp)
 
 
@@ -106,7 +108,8 @@ def cmd_generate(args) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="bot.py make")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("status")
+    st = sub.add_parser("status")
+    st.add_argument("--db", default="maker_trials.db", help="registry file under data_cache/")
     g = sub.add_parser("generate")
     g.add_argument("--max-trials", type=int, default=50)
     g.add_argument("--seed", type=int, default=0)
@@ -116,7 +119,9 @@ def main(argv=None) -> int:
     g.add_argument("--sleeve", default="swing", choices=["swing", "intraday"],
                    help="swing (daily/CNC, default) or intraday (MIS, session blocks)")
     g.add_argument("--timeframe", default="day",
-                   help="candle timeframe (swing: day; intraday: 5min/15min/30min/1hr)")
+                   help="intraday: 'all' or a comma list of 1min/5min/15min/30min/1hr")
+    g.add_argument("--db", default="maker_trials.db",
+                   help="registry file under data_cache/ (use a separate db for intraday)")
     for name in ("screen", "gauntlet", "reserve"):
         sub.add_parser(name)
     args = ap.parse_args(argv)
