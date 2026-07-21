@@ -5,10 +5,10 @@ Going live is a deliberate, manual decision. No script flips
 
 ## 1. Evidence gate (data-driven)
 
-Run the readiness check:
+Run the readiness check (dry-run — reports readiness, flips nothing):
 
 ```
-.venv\Scripts\python.exe go_live_check.py
+.venv\Scripts\python.exe bot.py golive
 ```
 
 It reads paper trades from `logs/trades.db` and reports PASS/FAIL against:
@@ -37,7 +37,7 @@ Even on a PASS, confirm:
 1. In `config/config.yaml` set `paper_trading.enabled: false`.
 2. **Start at reduced capital** — lower `risk.total_capital` for the first live week.
 3. Watch Telegram closely on day one; `/stop` is always available.
-4. Re-run `go_live_check.py` weekly to confirm the edge holds live.
+4. Re-run `bot.py golive` weekly to confirm the edge holds live.
 
 ## Rollback
 
