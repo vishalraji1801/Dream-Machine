@@ -306,3 +306,7 @@ STRATEGY_REGISTRY.update(_LIBRARY)
 # Maker reserve-CERTIFIED strategies (auto-generated from the ALIVE reserve verdicts).
 from src.maker_certified import REGISTRY as _MAKER_CERTIFIED   # noqa: E402
 STRATEGY_REGISTRY.update(_MAKER_CERTIFIED)
+
+# Maker GAUNTLET survivors that did not certify at the reserve (backtestable for re-exam).
+from src.maker_gauntlet import REGISTRY as _MAKER_GAUNTLET   # noqa: E402
+STRATEGY_REGISTRY.update(_MAKER_GAUNTLET)
