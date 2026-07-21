@@ -5,7 +5,13 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.swing_engine import SwingEngine
+from src.swing_engine import SwingEngine, SwingPosition
+
+
+def _pos(sym, qty=3, entry=100.0, stop=90.0):
+    return SwingPosition(symbol=sym, strategy="maker_822bbda5", direction="BUY",
+                         entry_price=entry, quantity=qty, stop=stop, target=200.0,
+                         entry_date="2026-07-21", regime="RANGE", peak=entry, atr=5.0)
 
 
 def _daily(closes, highs=None, lows=None):
@@ -105,3 +111,44 @@ def test_insufficient_index_data_skips(tmp_path):
     eng = SwingEngine(_cfg(), "paper", FakeDB(), _fetch(data), state_path=str(tmp_path / "sw.json"))
     r = eng.run_daily(now=NOW)
     assert r["regime"] == "UNKNOWN" and r["entered"] == 0
+
+
+# ── broker reconciliation (LIVE: Kite is the source of truth) ─────────────────
+
+def test_reconcile_closes_positions_broker_no_longer_holds(tmp_path):
+    db = FakeDB()
+    eng = SwingEngine(_cfg(), "live", db, _fetch({}), state_path=str(tmp_path / "sw.json"),
+                      fetch_holdings=lambda: [{"tradingsymbol": "AAA", "quantity": 3,
+                                               "average_price": 100}])
+    eng.positions = {"AAA": _pos("AAA", 3), "BBB": _pos("BBB", 5, stop=88.0)}  # BBB gone at broker
+    r = eng.reconcile_with_broker()
+    assert r["reconciled"] and r["closed"] == 1
+    assert "AAA" in eng.positions and "BBB" not in eng.positions          # BBB reconciled closed
+    assert any(t["symbol"] == "BBB" and t["exit_reason"] == "swing_reconciled_broker_exit"
+               for t in db.trades)
+
+
+def test_reconcile_syncs_partial_and_ignores_untracked(tmp_path):
+    hold = [{"tradingsymbol": "AAA", "quantity": 1, "average_price": 100},   # partial (had 3)
+            {"tradingsymbol": "ZZZ", "quantity": 10, "average_price": 50}]   # manual, untracked
+    eng = SwingEngine(_cfg(), "live", FakeDB(), _fetch({}), state_path=str(tmp_path / "sw.json"),
+                      fetch_holdings=lambda: hold)
+    eng.positions = {"AAA": _pos("AAA", 3)}
+    r = eng.reconcile_with_broker()
+    assert eng.positions["AAA"].quantity == 1 and r["adjusted"] == 1        # synced down
+    assert "ZZZ" not in eng.positions and r["untracked"] == 1               # not managed
+
+
+def test_reconcile_unsafe_without_holdings_source(tmp_path):
+    eng = SwingEngine(_cfg(), "live", FakeDB(), _fetch({}), state_path=str(tmp_path / "sw.json"))
+    r = eng.reconcile_with_broker()
+    assert r["reconciled"] is False                                        # flagged unsafe
+
+
+def test_reconcile_only_in_live_mode(tmp_path):
+    calls = []
+    eng = SwingEngine(_cfg(), "paper", FakeDB(), _fetch({"NIFTY 50": _daily([100] * 30)}),
+                      state_path=str(tmp_path / "sw.json"),
+                      fetch_holdings=lambda: calls.append(1) or [])
+    eng.run_daily(now=NOW)                                                  # paper: never reconciles
+    assert calls == []

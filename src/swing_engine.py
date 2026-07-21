@@ -61,11 +61,16 @@ class SwingEngine:
     def __init__(self, cfg: dict, mode: str, db, fetch_daily: Callable,
                  index_symbol: str = "NIFTY 50",
                  state_path: str = os.path.join("logs", "swing_state.json"),
-                 strategies_dir: str = "strategies"):
+                 strategies_dir: str = "strategies",
+                 fetch_holdings: Optional[Callable] = None):
         self.cfg = cfg
         self.mode = mode
         self.db = db
         self.fetch_daily = fetch_daily
+        # LIVE reconciliation: returns the broker's delivery holdings
+        # [{tradingsymbol, quantity, average_price}, ...]. Kite is the source of truth; a GTT
+        # that fired overnight / a manual sell / a partial fill all leave local state stale.
+        self.fetch_holdings = fetch_holdings
         self.index_symbol = index_symbol
         self.state_path = state_path
 
@@ -102,6 +107,8 @@ class SwingEngine:
 
     def run_daily(self, now: Optional[datetime] = None) -> dict:
         now = now or datetime.now()
+        if self.mode == "live":            # Kite is the truth — sync BEFORE managing/entering
+            self.reconcile_with_broker(now)
         idx = self.fetch_daily(self.index_symbol, self.lookback_days)
         if idx is None or len(idx) < 60:
             logger.warning("swing: insufficient index daily data — skipping run")
@@ -131,6 +138,60 @@ class SwingEngine:
                        f"entered={entered} open={len(self.positions)}")
         return {"regime": regime.regime.value, "entered": entered, "exited": exited,
                 "open": len(self.positions)}
+
+    # ── broker reconciliation (LIVE: Kite is the source of truth) ─────────────
+
+    def reconcile_with_broker(self, now: Optional[datetime] = None) -> dict:
+        """Sync local swing positions against the broker's ACTUAL delivery holdings before
+        the day's logic runs. Kite is authoritative — a GTT stop that fired overnight, a
+        manual sell, a partial/failed fill, or a missed cycle all leave `swing_state.json`
+        stale, and acting on stale state (managing a phantom position, stopping shares you no
+        longer hold) is how live bots lose money. Positions the broker no longer holds are
+        recorded CLOSED; quantities are synced down to the broker's; holdings the bot never
+        opened are left untouched (surfaced in the log, not managed)."""
+        now = now or datetime.now()
+        if self.fetch_holdings is None:
+            logger.error("swing: LIVE run with NO fetch_holdings — trading on UNRECONCILED "
+                         "local state (unsafe). Wire a broker-holdings source.")
+            return {"reconciled": False, "reason": "no_holdings_source"}
+        try:
+            holdings = self.fetch_holdings() or []
+        except Exception as exc:
+            logger.error(f"swing: broker holdings fetch FAILED ({exc}) — refusing to trade on "
+                         f"stale state this cycle")
+            return {"reconciled": False, "reason": "fetch_failed"}
+
+        held: dict = {}
+        for h in holdings:
+            sym = h.get("tradingsymbol") or h.get("symbol")
+            held[sym] = held.get(sym, 0) + int(h.get("quantity", 0))
+
+        closed = adjusted = 0
+        for sym in list(self.positions):
+            pos = self.positions[sym]
+            bqty = held.get(sym, 0)
+            if bqty <= 0:                       # broker no longer holds it -> exited away
+                # best-effort exit price = the stop (a GTT stop is the most likely trigger);
+                # tagged 'reconciled' so the P&L is understood as inferred, not a live fill.
+                self._close(pos, pos.stop, "reconciled_broker_exit", now)
+                closed += 1
+            elif bqty < pos.quantity:           # partial exit -> sync qty down to the broker
+                logger.warning(f"swing RECONCILE {sym}: broker qty {bqty} < local "
+                               f"{pos.quantity} — adjusting to broker")
+                pos.quantity = bqty
+                adjusted += 1
+            # bqty >= pos.quantity: the bot's position is intact (extra is a manual add we
+            # deliberately do NOT manage) — leave it.
+
+        untracked = [s for s, q in held.items() if q > 0 and s not in self.positions]
+        if untracked:
+            logger.warning(f"swing RECONCILE: broker holds untracked names {untracked} "
+                           f"(not opened by the bot — ignored, not managed)")
+        self.save_state()
+        logger.warning(f"swing RECONCILE: closed={closed} adjusted={adjusted} "
+                       f"open={len(self.positions)} untracked={len(untracked)}")
+        return {"reconciled": True, "closed": closed, "adjusted": adjusted,
+                "open": len(self.positions), "untracked": len(untracked)}
 
     # ── exits (managed on the daily bar) ──────────────────────────────────────
 

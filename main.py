@@ -212,7 +212,11 @@ def startup() -> dict:
         ctx["swing"] = SwingEngine(
             cfg, mode=ctx["source"], db=ctx["db"],
             fetch_daily=lambda s, d: _fetch_daily(ctx, s, d),
-            index_symbol=cfg["strategy"].get("regime_index_symbol", "NIFTY 50"))
+            index_symbol=cfg["strategy"].get("regime_index_symbol", "NIFTY 50"),
+            # LIVE: Kite delivery holdings are the source of truth each morning (a GTT that
+            # fired overnight / a manual sell / a partial fill would otherwise leave us stale).
+            fetch_holdings=((lambda: ctx["kite"].holdings())
+                            if ctx["source"] == "live" and ctx.get("kite") else None))
         sw = ctx["swing"]
         logger.warning(f"Swing sleeve ENABLED ({ctx['source']}) — {len(sw.positions)} open, "
                        f"strategies {[m.name for m in sw.metas]}")
