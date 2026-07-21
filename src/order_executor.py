@@ -18,10 +18,12 @@ _POLL_INTERVAL = 2  # seconds between order-status polls
 
 
 class OrderExecutor:
-    def __init__(self, kite: KiteConnect, cfg: dict):
+    def __init__(self, kite: KiteConnect, cfg: dict, product: Optional[str] = None):
         self._kite = kite
         self._exchange = cfg["trading"]["exchange"]
-        self._product = cfg["trading"]["product_type"]  # MIS
+        # product override lets the swing sleeve run CNC (delivery) while the intraday
+        # bot runs MIS from the same class. Defaults to the config's product_type (MIS).
+        self._product = product or cfg["trading"]["product_type"]
 
     # ── Place ─────────────────────────────────────────────────────────────────
 
@@ -154,6 +156,38 @@ class OrderExecutor:
         except Exception as exc:
             logger.error(f"place_gtt_oco failed ({symbol}): {exc}")
             return None
+
+    def modify_gtt_oco(
+        self,
+        gtt_id: int,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        stop_loss: float,
+        target: float,
+        last_price: float,
+    ) -> bool:
+        """Modify an existing GTT OCO — Kite has no native TRAILING GTT, so the bot ratchets
+        the stop itself and rewrites the static GTT each day the trailing stop moves. Returns
+        True on success. direction is the ENTRY side; the exit legs are the opposite."""
+        exit_txn = "SELL" if direction == "BUY" else "BUY"
+        trigger_values = [stop_loss, target] if direction == "BUY" else [target, stop_loss]
+        orders = [
+            {"transaction_type": exit_txn, "quantity": quantity,
+             "order_type": "LIMIT", "product": self._product, "price": trigger_values[0]},
+            {"transaction_type": exit_txn, "quantity": quantity,
+             "order_type": "LIMIT", "product": self._product, "price": trigger_values[1]},
+        ]
+        try:
+            self._kite.modify_gtt(
+                trigger_id=gtt_id, trigger_type="two-leg", tradingsymbol=symbol,
+                exchange=self._exchange, trigger_values=trigger_values,
+                last_price=last_price, orders=orders)
+            logger.info(f"GTT OCO modified: {symbol} | SL={stop_loss} target={target} | gtt_id={gtt_id}")
+            return True
+        except Exception as exc:
+            logger.error(f"modify_gtt_oco failed (gtt_id={gtt_id}, {symbol}): {exc}")
+            return False
 
     def cancel_gtt(self, gtt_id: int) -> bool:
         """Cancel a Kite GTT order. Returns True on success."""

@@ -55,6 +55,7 @@ class SwingPosition:
     regime: str
     peak: float          # highest close (long) / lowest (short) since entry — for trailing
     atr: float
+    gtt_id: Optional[int] = None   # Kite GTT OCO id (live) — modified as the trail ratchets
 
 
 class SwingEngine:
@@ -62,11 +63,15 @@ class SwingEngine:
                  index_symbol: str = "NIFTY 50",
                  state_path: str = os.path.join("logs", "swing_state.json"),
                  strategies_dir: str = "strategies",
-                 fetch_holdings: Optional[Callable] = None):
+                 fetch_holdings: Optional[Callable] = None,
+                 executor=None):
         self.cfg = cfg
         self.mode = mode
         self.db = db
         self.fetch_daily = fetch_daily
+        # LIVE order placement (CNC entry + GTT OCO stop/target). None in paper (simulated)
+        # and until the executor is wired — live entries are skipped rather than faked.
+        self.executor = executor
         # LIVE reconciliation: returns the broker's delivery holdings
         # [{tradingsymbol, quantity, average_price}, ...]. Kite is the source of truth; a GTT
         # that fired overnight / a manual sell / a partial fill all leave local state stale.
@@ -171,6 +176,8 @@ class SwingEngine:
             pos = self.positions[sym]
             bqty = held.get(sym, 0)
             if bqty <= 0:                       # broker no longer holds it -> exited away
+                if self.executor is not None and pos.gtt_id is not None:
+                    self.executor.cancel_gtt(pos.gtt_id)   # drop any orphaned GTT (no-op if fired)
                 # best-effort exit price = the stop (a GTT stop is the most likely trigger);
                 # tagged 'reconciled' so the P&L is understood as inferred, not a live fill.
                 self._close(pos, pos.stop, "reconciled_broker_exit", now)
@@ -218,16 +225,20 @@ class SwingEngine:
                 else:
                     pos.peak = min(pos.peak, close)
                     pos.stop = min(pos.stop, pos.peak + self.atr_mult * atr)
-                # Kite has no native trailing GTT — when the stop moves, the bot must
-                # MODIFY the exchange GTT itself (live only; paper simulates the exit).
-                executor = getattr(self, "executor", None)   # None until live exec is wired
-                if (self.mode == "live" and pos.stop != prev_stop and executor is not None):
-                    try:
-                        executor.modify_gtt(pos.symbol, pos.direction,
-                                            pos.quantity, round(pos.stop, 2), pos.target)
-                    except Exception as exc:
-                        logger.error(f"swing: GTT modify failed for {pos.symbol} — {exc}")
+                # Kite has no native trailing GTT — when the stop ratchets, the bot MODIFIES
+                # the exchange GTT itself so the (raised) stop is enforced even while offline.
+                if (self.mode == "live" and pos.stop != prev_stop
+                        and self.executor is not None and pos.gtt_id is not None):
+                    self.executor.modify_gtt_oco(pos.gtt_id, pos.symbol, pos.direction,
+                                                 pos.quantity, round(pos.stop, 2),
+                                                 round(pos.target, 2), close)
 
+            # LIVE: the exchange-side GTT OCO owns the actual exit (it fires anytime, even
+            # when the bot is offline); it is detected next morning by reconcile_with_broker.
+            # So we do NOT simulate an exit here — that would double-count / diverge from the
+            # real fill. PAPER: simulate the exit against the daily bar and book it.
+            if self.mode == "live":
+                continue
             exit_price = reason = None
             if pos.direction == "BUY":
                 if low <= pos.stop:
@@ -276,9 +287,8 @@ class SwingEngine:
                     self._refuse(sym, a.name, sig, "slot_full", free, now)
                 elif qty <= 0 or pos_value < self.min_position_value:
                     self._refuse(sym, a.name, sig, "insufficient_capital", free, now)
-                else:
-                    self._open(sym, a.name, sig, qty, regime.regime.value, _atr(df, 14), now)
-                    entered += 1
+                elif self._open(sym, a.name, sig, qty, regime.regime.value, _atr(df, 14), now):
+                    entered += 1                 # live entry may fail to fill -> not opened
                 break            # this symbol's signal is handled (taken or noted)
         return entered
 
@@ -296,20 +306,39 @@ class SwingEngine:
             except Exception as exc:
                 logger.error(f"swing: refusal record failed — {exc}")
 
-    def _open(self, sym, strat, sig, qty, regime, atr, now):
+    def _open(self, sym, strat, sig, qty, regime, atr, now) -> bool:
+        """Open a position. LIVE: place the CNC entry, confirm the fill, then place a GTT OCO
+        (stop + target) safety net at the exchange — records the ACTUAL fill price/qty. If the
+        entry doesn't fill, nothing is opened (returns False). Paper: simulated at the signal
+        price. Returns True iff a position was opened."""
+        entry_price, gtt_id = sig.entry_price, None
+        if self.mode == "live":
+            if self.executor is None:
+                logger.error(f"swing LIVE: no executor wired — cannot place {sym} entry")
+                return False
+            oid = self.executor.place_order(sym, sig.direction, qty, sig.entry_price,
+                                            order_type="MARKET")
+            status = self.executor.monitor_order(oid) if oid else None
+            if (not status or status.get("status") != "COMPLETE"
+                    or int(status.get("filled_quantity", 0)) <= 0):
+                logger.error(f"swing LIVE entry not filled for {sym} — not opening")
+                return False
+            entry_price = float(status.get("average_price") or sig.entry_price)
+            qty = int(status.get("filled_quantity") or qty)
+            # exchange-side safety net: SL + target OCO (survives the bot being offline)
+            gtt_id = self.executor.place_gtt_oco(sym, sig.direction, qty, sig.stop_loss,
+                                                 sig.target, entry_price)
         self.positions[sym] = SwingPosition(
             symbol=sym, strategy=strat, direction=sig.direction,
-            entry_price=sig.entry_price, quantity=qty, stop=sig.stop_loss,
+            entry_price=entry_price, quantity=qty, stop=sig.stop_loss,
             target=sig.target, entry_date=now.date().isoformat(), regime=regime,
-            peak=sig.entry_price, atr=atr or 0.0)
-        logger.warning(f"swing ENTER {sig.direction} {qty}x{sym} @ {sig.entry_price} "
-                       f"[{strat} {regime}] stop={sig.stop_loss} target={sig.target}")
+            peak=entry_price, atr=atr or 0.0, gtt_id=gtt_id)
+        logger.warning(f"swing ENTER {sig.direction} {qty}x{sym} @ {entry_price} "
+                       f"[{strat} {regime}] stop={sig.stop_loss} target={sig.target} gtt={gtt_id}")
         if self.db is not None:
             self.db.record_signal(source=self.mode, symbol=sym, direction=sig.direction,
                                   taken=True, strategy=strat)
-        # TODO(live): place the CNC entry + a static stop GTT here (Kite has no native
-        # trailing GTT); _manage_exits then modifies that GTT each day the stop ratchets.
-        # Paper simulates fills/exits.
+        return True
 
     def _close(self, pos: SwingPosition, exit_price: float, reason: str, now: datetime):
         pnl = ((exit_price - pos.entry_price) if pos.direction == "BUY"

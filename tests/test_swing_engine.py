@@ -152,3 +152,71 @@ def test_reconcile_only_in_live_mode(tmp_path):
                       fetch_holdings=lambda: calls.append(1) or [])
     eng.run_daily(now=NOW)                                                  # paper: never reconciles
     assert calls == []
+
+
+# ── live order execution (CNC entry + GTT OCO stop/target) ────────────────────
+
+class _Sig:
+    def __init__(self, direction="BUY", entry=1000.0, stop=940.0, target=1200.0):
+        self.direction, self.entry_price, self.stop_loss, self.target = direction, entry, stop, target
+
+
+class MockExecutor:
+    def __init__(self, fill=True, gtt_id=111):
+        self.orders, self.gtts, self.modifies, self.cancels = [], [], [], []
+        self._fill, self._gtt_id = fill, gtt_id
+
+    def place_order(self, sym, direction, qty, price, order_type="LIMIT"):
+        self.orders.append((sym, direction, qty, price, order_type))
+        return "OID1" if self._fill else None
+
+    def monitor_order(self, oid, timeout_sec=60):
+        if not self._fill:
+            return {"status": "REJECTED"}
+        return {"status": "COMPLETE", "average_price": 1005.0,
+                "filled_quantity": self.orders[-1][2]}
+
+    def place_gtt_oco(self, sym, direction, qty, sl, tgt, last):
+        self.gtts.append((sym, sl, tgt, qty)); return self._gtt_id
+
+    def modify_gtt_oco(self, gid, sym, direction, qty, sl, tgt, last):
+        self.modifies.append((gid, sl, tgt)); return True
+
+    def cancel_gtt(self, gid):
+        self.cancels.append(gid); return True
+
+
+def test_live_open_places_cnc_order_and_gtt(tmp_path):
+    ex = MockExecutor(fill=True)
+    eng = SwingEngine(_cfg(), "live", FakeDB(), _fetch({}), state_path=str(tmp_path / "sw.json"),
+                      executor=ex)
+    opened = eng._open("AAA", "maker_822bbda5", _Sig(), 4, "RANGE", 5.0, NOW)
+    assert opened is True
+    assert ex.orders and ex.orders[0][0] == "AAA" and ex.orders[0][4] == "MARKET"   # CNC entry
+    assert ex.gtts and ex.gtts[0][1] == 940.0 and ex.gtts[0][2] == 1200.0           # GTT SL+target
+    pos = eng.positions["AAA"]
+    assert pos.entry_price == 1005.0 and pos.gtt_id == 111        # ACTUAL fill + gtt id recorded
+
+
+def test_live_open_aborts_when_not_filled(tmp_path):
+    eng = SwingEngine(_cfg(), "live", FakeDB(), _fetch({}), state_path=str(tmp_path / "sw.json"),
+                      executor=MockExecutor(fill=False))
+    assert eng._open("AAA", "s", _Sig(), 4, "RANGE", 5.0, NOW) is False
+    assert eng.positions == {}                                   # nothing opened on a reject
+
+
+def test_live_open_no_executor_is_safe(tmp_path):
+    eng = SwingEngine(_cfg(), "live", FakeDB(), _fetch({}), state_path=str(tmp_path / "sw.json"))
+    assert eng._open("AAA", "s", _Sig(), 4, "RANGE", 5.0, NOW) is False   # no executor -> skip
+
+
+def test_live_manage_exits_modifies_gtt_and_does_not_sim_close(tmp_path):
+    ex = MockExecutor()
+    data = {"AAA": _daily([1000 + i for i in range(30)])}        # rising -> stop ratchets up
+    eng = SwingEngine(_cfg(), "live", FakeDB(), _fetch(data), state_path=str(tmp_path / "sw.json"),
+                      executor=ex)
+    p = _pos("AAA", qty=4, entry=1000.0, stop=940.0); p.gtt_id = 111; p.peak = 1000.0
+    eng.positions = {"AAA": p}
+    exited = eng._manage_exits(NOW)
+    assert ex.modifies and ex.modifies[0][0] == 111              # GTT ratcheted at the exchange
+    assert exited == 0 and "AAA" in eng.positions               # live: GTT owns exits, no sim close
