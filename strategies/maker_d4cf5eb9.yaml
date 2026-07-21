@@ -1,0 +1,16 @@
+name: maker_d4cf5eb9
+# Maker OOS-validated edge (signal-level, post-2026-01-17 holdout). Regime-agnostic
+# (validated with regime filter off) -> runs all regimes. Exit = ATR trail (swing_engine).
+regime_param_sets:
+  STRONG_TREND_UP: {validated: true, oos_ref: maker_signal_oos_2026-01-17}
+  STRONG_TREND_DOWN: {validated: true, oos_ref: maker_signal_oos_2026-01-17}
+  RANGE: {validated: true, oos_ref: maker_signal_oos_2026-01-17}
+  HIGH_VOL_CHOP: {validated: true, oos_ref: maker_signal_oos_2026-01-17}
+  QUIET: {validated: true, oos_ref: maker_signal_oos_2026-01-17}
+  default: {validated: true, oos_ref: maker_signal_oos_2026-01-17}
+regime_fit:
+  STRONG_TREND_UP: {pf: 1.78, trades: 344, source: signal_level_oos}
+  STRONG_TREND_DOWN: {pf: 1.78, trades: 344, source: signal_level_oos}
+  RANGE: {pf: 1.78, trades: 344, source: signal_level_oos}
+  HIGH_VOL_CHOP: {pf: 1.78, trades: 344, source: signal_level_oos}
+  QUIET: {pf: 1.78, trades: 344, source: signal_level_oos}

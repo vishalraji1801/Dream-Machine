@@ -29,9 +29,17 @@ from src.strategy_meta import load_strategy_dir
 
 logger = get_logger("swing_engine")
 
-SWING_STRATEGIES = ("donchian_trend_tsl", "bb_mean_reversion",
-                    "volatility_contraction_breakout", "double_reversal",
-                    "index_dip_reversion", "ma_pullback", "abcd_pattern")
+# The 20 OOS-validated edges (signal-level, post-2026-01-17 holdout): donchian (manual) +
+# 19 maker/gauntlet strategies. The old manual set (bb/vcb/double_reversal/…) is retired —
+# vcb and double_reversal LOST money out-of-sample; bb and the rest were inconclusive.
+SWING_STRATEGIES = (
+    "donchian_trend_tsl",
+    "maker_eadcde15", "maker_deb70ada", "maker_19d44d4e", "maker_d4cf5eb9",
+    "maker_21198195", "maker_4679245d", "maker_5b132840", "maker_822bbda5",
+    "maker_ebf605d5", "maker_9227a6ff",
+    "mkg_2e09c633", "mkg_ff0fa479", "mkg_847ba1fe", "mkg_ba802757", "mkg_b9d2738e",
+    "mkg_7fca1c98", "mkg_9e41b56c", "mkg_06e96562", "mkg_73b2fda7",
+)
 
 
 @dataclass
@@ -68,6 +76,12 @@ class SwingEngine:
         self.atr_mult = s.get("atr_stop_mult", 6.0)
         self.lookback_days = s.get("lookback_days", 320)
         self.max_position_pct = s.get("max_position_pct", 20.0)
+        # Capital-aware sizing: deploy FREE capital per position up to max_position_value;
+        # refuse (and log) a signal when free capital can't fund a >= min_position_value
+        # position (below which delivery costs eat the edge). At small capital this means
+        # "hold what you have, note every signal you couldn't fund" rather than dust trades.
+        self.max_position_value = s.get("max_position_value", 120_000)
+        self.min_position_value = s.get("min_position_value", 3_000)
 
         metas = load_strategy_dir(strategies_dir)
         self.metas = [m for n, m in metas.items() if n in SWING_STRATEGIES]
@@ -131,7 +145,11 @@ class SwingEngine:
             high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
             atr = _atr(df, 14) or pos.atr
 
-            if pos.strategy == "donchian_trend_tsl":       # ratchet the trailing stop
+            # ATR-trailing strategies: donchian + all maker/gauntlet edges (their backtested
+            # exit IS the ATR trail, so they only replicate WITH this ratchet). Mean-reverters
+            # (bb, double_reversal) keep their fixed target/stop and are untouched here.
+            if (pos.strategy == "donchian_trend_tsl"
+                    or pos.strategy.startswith(("maker_", "mkg_"))):
                 prev_stop = pos.stop
                 if pos.direction == "BUY":
                     pos.peak = max(pos.peak, close)
@@ -168,12 +186,13 @@ class SwingEngine:
     # ── entries ───────────────────────────────────────────────────────────────
 
     def _scan_entries(self, regime, active: list, now: datetime) -> int:
-        if not active or len(self.positions) >= self.max_positions:
+        # NOTE: we do NOT early-return when positions are full — we still scan so that every
+        # real signal we can't fund is NOTED (refused with a reason), turning the capital
+        # limit into missed-opportunity data instead of a silent skip.
+        if not active:
             return 0
         entered = 0
         for sym in self.cfg["trading"]["watchlist"]:
-            if len(self.positions) >= self.max_positions:
-                break
             if sym in self.positions:
                 continue
             df = self.fetch_daily(sym, self.lookback_days)
@@ -184,18 +203,37 @@ class SwingEngine:
                 sig = generate_signal(sym, df, scfg)
                 if sig.direction == "HOLD":
                     continue
-                stop_dist = abs(sig.entry_price - sig.stop_loss)
-                if stop_dist <= 0:
+                if abs(sig.entry_price - sig.stop_loss) <= 0 or sig.entry_price <= 0:
                     continue
-                risk_amt = self.capital * self.risk_pct / 100 * a.weight
-                qty = int(risk_amt / stop_dist)
-                qty = min(qty, int(self.capital * self.max_position_pct / 100 / sig.entry_price))
-                if qty <= 0:
-                    continue
-                self._open(sym, a.name, sig, qty, regime.regime.value, _atr(df, 14), now)
-                entered += 1
-                break
+                # A real signal fired. Deploy FREE capital up to max_position_value; a signal
+                # that can't get a >= min_position_value position is REFUSED and logged.
+                deployed = sum(p.entry_price * p.quantity for p in self.positions.values())
+                free = self.capital - deployed
+                qty = int(min(free, self.max_position_value) / sig.entry_price)
+                pos_value = qty * sig.entry_price
+                if len(self.positions) >= self.max_positions:
+                    self._refuse(sym, a.name, sig, "slot_full", free, now)
+                elif qty <= 0 or pos_value < self.min_position_value:
+                    self._refuse(sym, a.name, sig, "insufficient_capital", free, now)
+                else:
+                    self._open(sym, a.name, sig, qty, regime.regime.value, _atr(df, 14), now)
+                    entered += 1
+                break            # this symbol's signal is handled (taken or noted)
         return entered
+
+    def _refuse(self, sym, strat, sig, reason: str, free: float, now: datetime) -> None:
+        """A real signal fired but capital couldn't fund a viable position — do NOT trade;
+        maintain existing positions and NOTE the refused trigger (the missed-opportunity
+        record at small capital)."""
+        logger.warning(f"swing REFUSED {sig.direction} {sym} [{strat}] reason={reason} "
+                       f"free=Rs.{free:.0f} entry={sig.entry_price} "
+                       f"stop={sig.stop_loss} target={sig.target}")
+        if self.db is not None:
+            try:
+                self.db.record_signal(source=self.mode, symbol=sym, direction=sig.direction,
+                                      taken=False, reason=reason, strategy=strat)
+            except Exception as exc:
+                logger.error(f"swing: refusal record failed — {exc}")
 
     def _open(self, sym, strat, sig, qty, regime, atr, now):
         self.positions[sym] = SwingPosition(

@@ -87,15 +87,17 @@ def test_exit_on_trailing_stop(tmp_path):
     assert held is None or held.entry_date != NOW.date().isoformat()   # original long gone
 
 
-def test_no_entry_when_index_ranges(tmp_path):
-    flat = _daily([200 + (1 if i % 2 else -1) for i in range(260)])   # index oscillates -> RANGE
-    stock = _daily([100 + i * 0.8 for i in range(260)])
+def test_winners_are_regime_agnostic(tmp_path):
+    # The maker/gauntlet winners are validated regime-OFF, so they trade a trending stock
+    # even when the INDEX is non-trend (the retired manual set used to sit out here). This
+    # is the intended behavior change from wiring the OOS-validated basket.
+    flat = _daily([200 + (1 if i % 2 else -1) for i in range(260)])   # index oscillates
+    stock = _daily([100 + i * 0.8 for i in range(260)])               # AAA trends -> fires
     data = {"NIFTY 50": flat, "AAA": stock, "BBB": _daily([200] * 260)}
     eng = SwingEngine(_cfg(), "paper", FakeDB(), _fetch(data), state_path=str(tmp_path / "sw.json"))
     r = eng.run_daily(now=NOW)
-    # non-trend regime -> donchian disabled; bb needs an oversold dip (flat won't trigger)
-    assert r["regime"] not in ("STRONG_TREND_UP", "STRONG_TREND_DOWN")
-    assert eng.positions == {}
+    assert r["regime"] not in ("STRONG_TREND_UP", "STRONG_TREND_DOWN")   # non-trend index
+    assert any(p.symbol == "AAA" for p in eng.positions.values())        # winner still trades it
 
 
 def test_insufficient_index_data_skips(tmp_path):

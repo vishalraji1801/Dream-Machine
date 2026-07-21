@@ -179,7 +179,12 @@ overlay:
   # Hard bounds the overlay can never exceed (the safety sandbox):
   allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty",
                        "volatility_contraction_breakout", "double_reversal",
-                       "index_dip_reversion", "ma_pullback", "abcd_pattern"]
+                       "index_dip_reversion", "ma_pullback", "abcd_pattern",
+                       "maker_eadcde15", "maker_deb70ada", "maker_19d44d4e", "maker_d4cf5eb9",
+                       "maker_21198195", "maker_4679245d", "maker_5b132840", "maker_822bbda5",
+                       "maker_ebf605d5", "maker_9227a6ff", "mkg_2e09c633", "mkg_ff0fa479",
+                       "mkg_847ba1fe", "mkg_ba802757", "mkg_b9d2738e", "mkg_7fca1c98",
+                       "mkg_9e41b56c", "mkg_06e96562", "mkg_73b2fda7"]
   min_stop_loss_pct: 0.5
   max_stop_loss_pct: 2.0
   min_target_pct: 0.5
@@ -256,10 +261,15 @@ swing:
   enabled: true
   window_start: "15:00"   # evaluate 15-30 min before the 15:30 close
   window_end: "15:14"     # kept before the 15:15 square-off boundary
-  capital: 500000         # delivery capital for the swing sleeve (paper)
-  risk_pct: 1.0           # % of swing capital risked per position
+  capital: 5000           # REAL first-month capital (paper mirrors it). Raise as you scale.
+  risk_pct: 1.0           # % of swing capital risked per position (legacy; sizing is capital-aware)
   max_positions: 5
   max_position_pct: 20.0  # max % of swing capital in one name
+  # Capital-aware sizing: deploy free capital up to max_position_value per position; a signal
+  # that can't fund a >= min_position_value position is REFUSED and logged (missed-opportunity
+  # record) rather than taken as a dust trade. At Rs.5000 this means ~1 position, rest noted.
+  max_position_value: 5000   # per-position rupee cap (= full capital at Rs.5k; raise when scaling)
+  min_position_value: 3000   # below this, refuse+log (delivery costs would eat the edge)
   atr_stop_mult: 6.0      # donchian trailing-stop ATR multiple
   lookback_days: 320      # daily bars fetched (>= 200 for the breakout window)
   product: CNC            # delivery (overnight); intraday sleeve uses MIS

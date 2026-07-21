@@ -21,9 +21,15 @@ from src.regime import RegimeConfig, RegimeState, classify
 from src.router import (PremarketAllocation, RouterConfig, route, routing_records)
 from src.strategy import generate_signal
 from src.strategy_meta import load_strategy_dir
-from src.swing_engine import SWING_STRATEGIES   # daily strategies belong to the swing sleeve
 
 logger = get_logger("live_router")
+
+# The intraday router considers ONLY these explicitly-intraday strategies. Everything else
+# (donchian, the maker/gauntlet basket, and the retired daily manual strategies) is a DAILY
+# strategy that belongs to the swing sleeve — a positive allowlist so growing the swing set
+# can never leak a daily strategy into intraday.
+INTRADAY_STRATEGIES = frozenset({"supertrend", "orb_nifty",
+                                 "red_to_green_vwap", "vwap_break_short", "vwap_squeeze"})
 
 
 class LiveRouter:
@@ -34,7 +40,7 @@ class LiveRouter:
         self.db = db
         # INTRADAY strategies only — daily/swing strategies run in the swing sleeve
         self.metas = [m for n, m in load_strategy_dir(strategies_dir).items()
-                      if n not in SWING_STRATEGIES]
+                      if n in INTRADAY_STRATEGIES]
         self.regime_cfg = RegimeConfig(**{k: v for k, v in cfg.get("regime", {}).items()
                                           if k in RegimeConfig.__dataclass_fields__})
         self.ms_cfg = cfg.get("market_state", {})
