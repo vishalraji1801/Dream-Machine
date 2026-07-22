@@ -220,3 +220,32 @@ def test_live_manage_exits_modifies_gtt_and_does_not_sim_close(tmp_path):
     exited = eng._manage_exits(NOW)
     assert ex.modifies and ex.modifies[0][0] == 111              # GTT ratcheted at the exchange
     assert exited == 0 and "AAA" in eng.positions               # live: GTT owns exits, no sim close
+
+
+# ── shadow book (unconstrained "what if" ledger for refused/all signals) ──────
+
+def test_shadow_book_tracks_signals_and_books_pnl(tmp_path):
+    up = _daily([100 + i for i in range(260)])
+    stock = _daily([100 + i * 0.8 for i in range(260)])
+    data = {"NIFTY 50": up, "AAA": stock, "BBB": _daily([100 + i * 0.7 for i in range(260)])}
+    db = FakeDB()
+    eng = SwingEngine(_cfg(), "paper", db, _fetch(data), state_path=str(tmp_path / "sw.json"))
+    eng.run_daily(now=NOW)
+    # the shadow book tracks EVERY firing signal (>= the capital-limited real book), keyed sym|strat
+    assert eng.shadow and any("|" in k for k in eng.shadow)
+    assert len(eng.shadow) >= len(eng.positions)
+    # now crash AAA -> the shadow stop fires -> booked as source='shadow' (never a real order)
+    crash = [100 + i * 0.8 for i in range(259)] + [50]
+    data["AAA"] = _daily(crash, lows=[c - 2 for c in crash[:-1]] + [40])
+    eng.run_daily(now=datetime(2026, 7, 15, 15, 5))
+    assert any(t.get("source") == "shadow" for t in db.trades)
+
+
+def test_shadow_book_persists(tmp_path):
+    up = _daily([100 + i for i in range(260)])
+    data = {"NIFTY 50": up, "AAA": _daily([100 + i * 0.8 for i in range(260)]),
+            "BBB": _daily([200] * 260)}
+    sp = str(tmp_path / "sw.json")
+    SwingEngine(_cfg(), "paper", FakeDB(), _fetch(data), state_path=sp).run_daily(now=NOW)
+    reloaded = SwingEngine(_cfg(), "paper", FakeDB(), _fetch(data), state_path=sp)
+    assert reloaded.shadow                                  # shadow survived the restart

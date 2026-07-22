@@ -92,6 +92,14 @@ class SwingEngine:
         # "hold what you have, note every signal you couldn't fund" rather than dust trades.
         self.max_position_value = s.get("max_position_value", 120_000)
         self.min_position_value = s.get("min_position_value", 3_000)
+        # Shadow book: an UNCONSTRAINED parallel ledger that takes EVERY signal (incl. the
+        # ones the real book refuses for capital), sized to a fixed notional, and tracks its
+        # hypothetical P&L. It tells you whether the trades you couldn't fund would have won
+        # or lost — the true performance of each strategy, free of the Rs.5000 limit. Purely
+        # analytical (never places an order); recorded to the ledger as source='shadow'.
+        self.shadow_enabled = s.get("shadow_enabled", True)
+        self.shadow_notional = s.get("shadow_notional", 100_000)
+        self.shadow: dict = {}
 
         metas = load_strategy_dir(strategies_dir)
         self.metas = [m for n, m in metas.items() if n in SWING_STRATEGIES]
@@ -126,6 +134,9 @@ class SwingEngine:
         exited = self._manage_exits(now)
         active = route(regime, self.metas, self.premarket, self.router_cfg)
         entered = self._scan_entries(regime, active, now)
+        if self.shadow_enabled:                 # unconstrained parallel book (analytical)
+            self._manage_shadow(now)
+            self._scan_shadow(regime, active, now)
         self.save_state()
 
         if self.db is not None:
@@ -353,6 +364,74 @@ class SwingEngine:
                                  exit_reason=f"swing_{reason}")
         del self.positions[pos.symbol]
 
+    # ── shadow book (unconstrained parallel ledger — the "what if" P&L) ────────
+
+    def _scan_shadow(self, regime, active: list, now: datetime) -> None:
+        """Open an UNCONSTRAINED shadow trade for every firing signal (including ones the real
+        book refused), one per (symbol, strategy), sized to a fixed notional. This is how we
+        learn whether the trades Rs.5000 couldn't fund would have won or lost."""
+        for sym in self.cfg["trading"]["watchlist"]:
+            df = self.fetch_daily(sym, self.lookback_days)
+            if df is None or len(df) < 210:
+                continue
+            for a in active:
+                key = f"{sym}|{a.name}"
+                if key in self.shadow:
+                    continue                    # already tracking this strategy on this name
+                scfg = {**self.cfg["strategy"], **a.param_set.params, "name": a.name}
+                sig = generate_signal(sym, df, scfg)
+                if (sig.direction == "HOLD" or sig.entry_price <= 0
+                        or abs(sig.entry_price - sig.stop_loss) <= 0):
+                    continue
+                qty = max(1, int(self.shadow_notional / sig.entry_price))
+                self.shadow[key] = SwingPosition(
+                    symbol=sym, strategy=a.name, direction=sig.direction,
+                    entry_price=sig.entry_price, quantity=qty, stop=sig.stop_loss,
+                    target=sig.target, entry_date=now.date().isoformat(),
+                    regime=regime.regime.value, peak=sig.entry_price, atr=_atr(df, 14) or 0.0)
+
+    def _manage_shadow(self, now: datetime) -> None:
+        """Trail/exit the shadow book on the daily bar and book realized shadow P&L to the
+        ledger as source='shadow' (never touches the broker — purely a counterfactual)."""
+        for key in list(self.shadow):
+            pos = self.shadow[key]
+            df = self.fetch_daily(pos.symbol, self.lookback_days)
+            if df is None or df.empty:
+                continue
+            bar = df.iloc[-1]
+            high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
+            atr = _atr(df, 14) or pos.atr
+            if (pos.strategy == "donchian_trend_tsl"
+                    or pos.strategy.startswith(("maker_", "mkg_"))):     # ATR trail
+                if pos.direction == "BUY":
+                    pos.peak = max(pos.peak, close)
+                    pos.stop = max(pos.stop, pos.peak - self.atr_mult * atr)
+                else:
+                    pos.peak = min(pos.peak, close)
+                    pos.stop = min(pos.stop, pos.peak + self.atr_mult * atr)
+            exit_price = reason = None
+            if pos.direction == "BUY":
+                if low <= pos.stop:
+                    exit_price, reason = pos.stop, "stop"
+                elif pos.target and high >= pos.target:
+                    exit_price, reason = pos.target, "target"
+            else:
+                if high >= pos.stop:
+                    exit_price, reason = pos.stop, "stop"
+                elif pos.target and low <= pos.target:
+                    exit_price, reason = pos.target, "target"
+            if exit_price is not None:
+                pnl = ((exit_price - pos.entry_price) if pos.direction == "BUY"
+                       else (pos.entry_price - exit_price)) * pos.quantity
+                if self.db is not None:
+                    self.db.record_trade(source="shadow", strategy=pos.strategy, regime=pos.regime,
+                                         symbol=pos.symbol, direction=pos.direction,
+                                         quantity=pos.quantity, entry_price=pos.entry_price,
+                                         exit_price=round(exit_price, 2), entry_time=pos.entry_date,
+                                         exit_time=now, pnl=round(pnl, 2),
+                                         exit_reason=f"shadow_{reason}")
+                del self.shadow[key]
+
     # ── state persistence (positions survive restarts / overnight) ────────────
 
     def load_state(self) -> None:
@@ -362,7 +441,9 @@ class SwingEngine:
             with open(self.state_path, encoding="utf-8") as f:
                 data = json.load(f)
             self.positions = {s: SwingPosition(**p) for s, p in data.get("positions", {}).items()}
-            logger.info(f"swing: restored {len(self.positions)} open position(s)")
+            self.shadow = {k: SwingPosition(**p) for k, p in data.get("shadow", {}).items()}
+            logger.info(f"swing: restored {len(self.positions)} open position(s), "
+                        f"{len(self.shadow)} shadow")
         except Exception as exc:
             logger.error(f"swing: could not load state — {exc}")
 
@@ -371,7 +452,8 @@ class SwingEngine:
             os.makedirs(os.path.dirname(self.state_path) or ".", exist_ok=True)
             tmp = self.state_path + ".tmp"
             with open(tmp, "w", encoding="utf-8") as f:
-                json.dump({"positions": {s: asdict(p) for s, p in self.positions.items()}}, f)
+                json.dump({"positions": {s: asdict(p) for s, p in self.positions.items()},
+                           "shadow": {k: asdict(p) for k, p in self.shadow.items()}}, f)
             os.replace(tmp, self.state_path)
         except OSError as exc:
             logger.error(f"swing: could not save state — {exc}")
