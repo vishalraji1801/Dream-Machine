@@ -104,3 +104,28 @@ def test_format_status_live_warns():
     assert "mode: LIVE" in text
     assert "REAL ORDERS ARE ENABLED" in text
     assert "STALE" in text
+
+
+def test_shadow_report_aggregates(tmp_path):
+    import json
+    import sqlite3
+
+    from src.ops import shadow_report
+    db = str(tmp_path / "t.db"); con = sqlite3.connect(db)
+    con.execute("CREATE TABLE trades (source TEXT, strategy TEXT, pnl REAL)")
+    con.executemany("INSERT INTO trades (source,strategy,pnl) VALUES (?,?,?)",
+                    [("shadow", "maker_822bbda5", 500.0), ("shadow", "maker_822bbda5", -200.0),
+                     ("shadow", "maker_5b132840", 300.0), ("paper", "other", 999.0)])
+    con.commit(); con.close()
+    state = str(tmp_path / "sw.json")
+    json.dump({"shadow": {"AAA|maker_822bbda5": {
+        "symbol": "AAA", "strategy": "maker_822bbda5", "direction": "BUY", "entry_price": 100.0,
+        "quantity": 10, "stop": 90.0, "target": 120.0, "entry_date": "2026-07-21",
+        "regime": "RANGE", "peak": 100.0, "atr": 5.0, "gtt_id": None}}},
+        open(state, "w"))
+    rep = shadow_report(state_path=state, db_path=db, kite=None)
+    assert "SHADOW BOOK" in rep
+    assert "maker_822bbda5" in rep and "maker_5b132840" in rep   # both shadow strategies
+    assert "999" not in rep                                       # paper trade excluded
+    # realized totals: 3 closed, net +600 (500-200+300)
+    assert "3" in rep and "+600" in rep

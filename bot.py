@@ -44,6 +44,18 @@ def cmd_status(_args) -> int:
     return 0
 
 
+def cmd_shadow(_args) -> int:
+    from src.ops import shadow_report
+    kite = None
+    try:                                       # optional — marks open positions to market
+        from src.auth import load_kite_session
+        kite = load_kite_session()
+    except Exception:
+        kite = None                            # no token -> realized-only + unmarked opens
+    print(shadow_report(kite=kite))
+    return 0
+
+
 def cmd_golive(args) -> int:
     import yaml
     from src.go_live import format_report
@@ -98,6 +110,7 @@ def main() -> int:
         p.add_argument("extra", nargs=argparse.REMAINDER)
 
     sub.add_parser("status")
+    sub.add_parser("shadow")
     p_live = sub.add_parser("golive")
     p_live.add_argument("--confirm", action="store_true",
                         help="actually flip to live (otherwise dry-run report only)")
@@ -110,6 +123,8 @@ def main() -> int:
         return _delegate(_PASSTHROUGH[args.command], args.extra)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "shadow":
+        return cmd_shadow(args)
     if args.command == "golive":
         return cmd_golive(args)
     if args.command == "gopaper":

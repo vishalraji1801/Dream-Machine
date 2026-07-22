@@ -136,3 +136,73 @@ def format_status(status: dict) -> str:
     if mode == "LIVE":
         lines.append(" !! REAL ORDERS ARE ENABLED. 'bot gopaper' reverts. !!")
     return "\n".join(lines)
+
+
+def shadow_report(state_path: str = os.path.join("logs", "swing_state.json"),
+                  db_path: str = os.path.join("logs", "trades.db"), kite=None) -> str:
+    """The swing sleeve's SHADOW book — every signal (incl. the ones Rs.5000 refused) tracked
+    unconstrained. Shows REALIZED shadow P&L per strategy (closed shadow trades) + OPEN shadow
+    positions marked-to-market (if a Kite session is passed). Answers 'would the trades I
+    couldn't fund have won or lost?'."""
+    import json
+    import sqlite3
+
+    realized: dict = {}
+    if os.path.exists(db_path):
+        con = sqlite3.connect(db_path); con.row_factory = sqlite3.Row
+        for r in con.execute("SELECT strategy, pnl FROM trades WHERE source='shadow'"):
+            d = realized.setdefault(r["strategy"], {"n": 0, "net": 0.0, "wins": 0})
+            pnl = r["pnl"] or 0.0
+            d["n"] += 1; d["net"] += pnl; d["wins"] += 1 if pnl > 0 else 0
+        con.close()
+
+    open_pos = []
+    if os.path.exists(state_path):
+        try:
+            open_pos = list(json.load(open(state_path, encoding="utf-8")).get("shadow", {}).values())
+        except Exception:
+            pass
+    ltp: dict = {}
+    if kite is not None and open_pos:
+        try:
+            syms = sorted({p["symbol"] for p in open_pos})
+            ltp = {k.split(":")[1]: v["last_price"]
+                   for k, v in kite.ltp(["NSE:" + s for s in syms]).items()}
+        except Exception:
+            ltp = {}
+    unreal: dict = {}
+    for p in open_pos:
+        cur = ltp.get(p["symbol"])
+        u = (((cur - p["entry_price"]) if p["direction"] == "BUY" else (p["entry_price"] - cur))
+             * p["quantity"]) if cur else None
+        d = unreal.setdefault(p["strategy"], {"n": 0, "upnl": 0.0, "marked": 0})
+        d["n"] += 1
+        if u is not None:
+            d["upnl"] += u; d["marked"] += 1
+
+    strategies = sorted(set(realized) | set(unreal),
+                        key=lambda s: realized.get(s, {}).get("net", 0), reverse=True)
+    L = ["=" * 78,
+         " SWING SHADOW BOOK — every signal tracked unconstrained (source='shadow')",
+         "=" * 78,
+         f" {'strategy':16} {'closed':>6} {'realized':>10} {'win%':>5} {'open':>5} {'unrealized':>11}",
+         " " + "-" * 74]
+    tot = {"n": 0, "net": 0.0, "wins": 0, "open": 0, "upnl": 0.0}
+    for s in strategies:
+        rz = realized.get(s, {"n": 0, "net": 0.0, "wins": 0})
+        uz = unreal.get(s, {"n": 0, "upnl": 0.0, "marked": 0})
+        win = f"{100 * rz['wins'] // rz['n']}" if rz["n"] else "-"
+        umark = f"Rs.{uz['upnl']:>+8,.0f}" if uz["marked"] else (f"{uz['n']} open" if uz["n"] else "-")
+        L.append(f" {s:16} {rz['n']:>6} {rz['net']:>+10,.0f} {win:>5} {uz['n']:>5} {umark:>11}")
+        tot["n"] += rz["n"]; tot["net"] += rz["net"]; tot["wins"] += rz["wins"]
+        tot["open"] += uz["n"]; tot["upnl"] += uz["upnl"]
+    L.append(" " + "-" * 74)
+    twin = f"{100 * tot['wins'] // tot['n']}" if tot["n"] else "-"
+    L.append(f" {'TOTAL':16} {tot['n']:>6} {tot['net']:>+10,.0f} {twin:>5} {tot['open']:>5} "
+             f"Rs.{tot['upnl']:>+8,.0f}")
+    L.append("=" * 78)
+    if not tot["n"] and not tot["open"]:
+        L.append(" (no shadow trades yet — runs accumulate from the next `bot.py run`)")
+    if kite is None and tot["open"]:
+        L.append(" (open positions not marked-to-market — no Kite session; run with a fresh token)")
+    return "\n".join(L)
