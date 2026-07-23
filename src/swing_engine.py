@@ -92,13 +92,12 @@ class SwingEngine:
         # "hold what you have, note every signal you couldn't fund" rather than dust trades.
         self.max_position_value = s.get("max_position_value", 120_000)
         self.min_position_value = s.get("min_position_value", 3_000)
-        # Shadow book: an UNCONSTRAINED parallel ledger that takes EVERY signal (incl. the
-        # ones the real book refuses for capital), sized to a fixed notional, and tracks its
-        # hypothetical P&L. It tells you whether the trades you couldn't fund would have won
-        # or lost — the true performance of each strategy, free of the Rs.5000 limit. Purely
-        # analytical (never places an order); recorded to the ledger as source='shadow'.
+        # Shadow book: a parallel ledger that takes EVERY signal (incl. the ones the real book
+        # refuses for slot/capital), sized at the SAME per-position capital as paper
+        # (max_position_value), and tracks its hypothetical P&L — so you learn, at your real
+        # scale, whether the trades you couldn't fund would have won or lost. Purely analytical
+        # (never places an order); recorded to the ledger as source='shadow'.
         self.shadow_enabled = s.get("shadow_enabled", True)
-        self.shadow_notional = s.get("shadow_notional", 100_000)
         self.shadow: dict = {}
 
         metas = load_strategy_dir(strategies_dir)
@@ -269,12 +268,13 @@ class SwingEngine:
     # ── entries ───────────────────────────────────────────────────────────────
 
     def _scan_entries(self, regime, active: list, now: datetime) -> int:
-        # NOTE: we do NOT early-return when positions are full — we still scan so that every
-        # real signal we can't fund is NOTED (refused with a reason), turning the capital
-        # limit into missed-opportunity data instead of a silent skip.
+        # Collect EVERY firing signal (one per symbol), then fill the scarce slot(s) with the
+        # HIGHEST-CONVICTION ones first — an always-on strategy (e.g. pdh+limit that fires on
+        # nearly every name) must not monopolise the single Rs.5000 slot. Everything we can't
+        # fund is still NOTED (refused) as missed-opportunity data.
         if not active:
             return 0
-        entered = 0
+        fires = []                       # (sym, name, sig, weight, atr)
         for sym in self.cfg["trading"]["watchlist"]:
             if sym in self.positions:
                 continue
@@ -284,23 +284,31 @@ class SwingEngine:
             for a in active:
                 scfg = {**self.cfg["strategy"], **a.param_set.params, "name": a.name}
                 sig = generate_signal(sym, df, scfg)
-                if sig.direction == "HOLD":
+                if sig.direction == "HOLD" or sig.entry_price <= 0 \
+                        or abs(sig.entry_price - sig.stop_loss) <= 0:
                     continue
-                if abs(sig.entry_price - sig.stop_loss) <= 0 or sig.entry_price <= 0:
-                    continue
-                # A real signal fired. Deploy FREE capital up to max_position_value; a signal
-                # that can't get a >= min_position_value position is REFUSED and logged.
-                deployed = sum(p.entry_price * p.quantity for p in self.positions.values())
-                free = self.capital - deployed
-                qty = int(min(free, self.max_position_value) / sig.entry_price)
-                pos_value = qty * sig.entry_price
-                if len(self.positions) >= self.max_positions:
-                    self._refuse(sym, a.name, sig, "slot_full", free, now)
-                elif qty <= 0 or pos_value < self.min_position_value:
-                    self._refuse(sym, a.name, sig, "insufficient_capital", free, now)
-                elif self._open(sym, a.name, sig, qty, regime.regime.value, _atr(df, 14), now):
-                    entered += 1                 # live entry may fail to fill -> not opened
-                break            # this symbol's signal is handled (taken or noted)
+                fires.append((sym, a.name, sig, a.weight, _atr(df, 14)))
+                break                    # one signal per symbol
+        if not fires:
+            return 0
+        # CONVICTION rank: a strategy that fired on FEWER names is more selective (higher
+        # conviction) — prefer it, then higher router weight, so the slot diversifies across
+        # setups over time instead of always going to the flooder's first watchlist name.
+        from collections import Counter
+        freq = Counter(name for _, name, _, _, _ in fires)
+        fires.sort(key=lambda f: (freq[f[1]], -f[3]))
+        entered = 0
+        for sym, name, sig, _w, atr in fires:
+            deployed = sum(p.entry_price * p.quantity for p in self.positions.values())
+            free = self.capital - deployed
+            qty = int(min(free, self.max_position_value) / sig.entry_price)
+            pos_value = qty * sig.entry_price
+            if len(self.positions) >= self.max_positions:
+                self._refuse(sym, name, sig, "slot_full", free, now)
+            elif qty <= 0 or pos_value < self.min_position_value:
+                self._refuse(sym, name, sig, "insufficient_capital", free, now)
+            elif self._open(sym, name, sig, qty, regime.regime.value, atr, now):
+                entered += 1             # (best-ranked fill first; rest get refused for capital)
         return entered
 
     def _refuse(self, sym, strat, sig, reason: str, free: float, now: datetime) -> None:
@@ -383,7 +391,9 @@ class SwingEngine:
                 if (sig.direction == "HOLD" or sig.entry_price <= 0
                         or abs(sig.entry_price - sig.stop_loss) <= 0):
                     continue
-                qty = max(1, int(self.shadow_notional / sig.entry_price))
+                qty = int(self.max_position_value / sig.entry_price)   # SAME sizing as paper
+                if qty < 1:
+                    continue            # can't afford at paper capital -> not shadowed (as real)
                 self.shadow[key] = SwingPosition(
                     symbol=sym, strategy=a.name, direction=sig.direction,
                     entry_price=sig.entry_price, quantity=qty, stop=sig.stop_loss,
