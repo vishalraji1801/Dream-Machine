@@ -33,9 +33,18 @@ _PASSTHROUGH = {
 
 def _delegate(script: str, extra: list) -> int:
     """Run a sibling script with inherited stdio (TOTP prompts work) and
-    propagate its exit code (the start_bot.bat watchdog depends on it)."""
+    propagate its exit code (the start_bot.bat watchdog depends on it).
+
+    Ctrl+C is delivered to the whole process group: the child handles it and
+    exits cleanly, so here we just wait out the child and swallow our own
+    KeyboardInterrupt instead of dumping a wrapper-level traceback."""
     cmd = [sys.executable, os.path.join(ROOT, script)] + extra
-    return subprocess.call(cmd, cwd=ROOT)
+    proc = subprocess.Popen(cmd, cwd=ROOT)
+    while True:
+        try:
+            return proc.wait()
+        except KeyboardInterrupt:
+            continue  # let the child finish its own shutdown, then return its code
 
 
 def cmd_status(_args) -> int:
