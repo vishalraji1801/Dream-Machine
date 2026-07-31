@@ -261,18 +261,27 @@ swing:
   enabled: true
   window_start: "15:00"   # evaluate 15-30 min before the 15:30 close
   window_end: "15:14"     # kept before the 15:15 square-off boundary
-  capital: 5000           # REAL first-month capital (paper mirrors it). Raise as you scale.
+  capital: 1000000        # PAPER campaign: Rs.10L virtual capital (enough to fund the signal
+                          # flow so the validation loop can actually reach the go-live gate).
+                          # Drop back to your real starting capital before flipping live.
   risk_pct: 1.0           # % of swing capital risked per position (legacy; sizing is capital-aware)
   max_positions: 5
   max_position_pct: 20.0  # max % of swing capital in one name
   # Capital-aware sizing: deploy free capital up to max_position_value per position; a signal
   # that can't fund a >= min_position_value position is REFUSED and logged (missed-opportunity
-  # record) rather than taken as a dust trade. At Rs.5000 this means ~1 position, rest noted.
-  max_position_value: 5000   # per-position rupee cap (= full capital at Rs.5k; raise when scaling)
-  min_position_value: 3000   # below this, refuse+log (delivery costs would eat the edge)
+  # record) rather than taken as a dust trade. At Rs.10L / 20% this is ~5 positions of Rs.2L.
+  max_position_value: 200000  # per-position rupee cap (= 20% of Rs.10L; 5 concurrent names)
+  min_position_value: 25000   # below this, refuse+log (delivery costs would eat the edge)
   atr_stop_mult: 6.0      # donchian trailing-stop ATR multiple
   lookback_days: 320      # daily bars fetched (>= 200 for the breakout window)
   product: CNC            # delivery (overnight); intraday sleeve uses MIS
+  # Regime exposure throttle — the ONE thing the regime signal legitimately changes for
+  # these regime-AGNOSTIC edges (they're validated ON in every regime, so the router can't
+  # pick among them; it can only size total risk). A per-cycle multiplier on how many NEW
+  # positions to open, by market regime: 1.0 = full appetite, lower = fewer new names.
+  # Only ever REDUCES risk vs the validated baseline. Set every regime to 1.0 to disable.
+  regime_exposure:
+    HIGH_VOL_CHOP: 0.5    # trim new entries in the one genuinely hostile regime
   # Kite Connect exposes only STATIC GTT triggers (no native trailing SL), so the bot
   # ratchets the stop itself and MODIFIES the GTT each day it moves. Backtest simulates
   # the ATR trail directly.

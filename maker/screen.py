@@ -13,7 +13,13 @@ import pandas as pd
 
 from maker.grammar import compile
 
-DEFAULTS = {"min_trades": 30, "min_pf": 1.1, "top3_max_frac": 0.60}
+DEFAULTS = {"min_trades": 30, "min_pf": 1.1, "top3_max_frac": 0.60,
+            # Cross-sectional SELECTIVITY: the max fraction of the universe a candidate may
+            # open on any single day. An edge picks a few names; a market-proxy (e.g. "buy at
+            # PDH", offset 0) fires on nearly the whole universe at once — high P&L that's just
+            # beta, un-fundable at real capital, and un-diversifying. top3_frac/overtrading
+            # miss it (they're per-name / P&L-concentration); breadth is per-DAY across names.
+            "max_breadth_frac": 0.50}
 
 # A swing/delivery strategy that trades a name more than ~weekly is degenerate — usually a
 # tautological "enter every bar" combo. Killing it at the cheap screen (before the
@@ -39,18 +45,34 @@ def screen_decision(m: dict, thresholds: dict = DEFAULTS) -> tuple[bool, str]:
         return False, "net_negative"
     if m["top3_frac"] > thresholds["top3_max_frac"]:
         return False, "outlier_carried"
+    if m.get("breadth", 0.0) > thresholds.get("max_breadth_frac", 1.0):
+        return False, "low_selectivity"
     return True, "pass"
 
 
-def _metrics(res) -> dict:
+def _breadth(trades, n_symbols) -> float:
+    """Peak single-day cross-sectional breadth: the largest fraction of the universe the
+    candidate opened on one calendar day. ~1.0 = a market-proxy that buys everything at once;
+    a selective edge stays low. Needs >1 symbol to be meaningful (0.0 otherwise)."""
+    if not trades or not n_symbols or n_symbols <= 1:
+        return 0.0
+    from collections import Counter
+    by_day = Counter(pd.Timestamp(t.entry_time).date() for t in trades)
+    return round(max(by_day.values()) / n_symbols, 3)
+
+
+def _metrics(res, n_symbols=None) -> dict:
     trades, net = res.total_trades, res.net_pnl
     pnls = sorted((t.pnl for t in res.trades), reverse=True)
     top3 = sum(pnls[:3])
     top3_frac = (top3 / net) if net > 0 else 1.0
     pf = res.profit_factor if res.profit_factor != float("inf") else 3.0
-    return {"trades": trades, "pf": round(pf, 3), "net": round(net, 2),
-            "top3_frac": round(top3_frac, 3),
-            "rank": round(pf * math.log(max(trades, 1)), 3)}
+    m = {"trades": trades, "pf": round(pf, 3), "net": round(net, 2),
+         "top3_frac": round(top3_frac, 3),
+         "rank": round(pf * math.log(max(trades, 1)), 3)}
+    if n_symbols is not None:
+        m["breadth"] = _breadth(res.trades, n_symbols)
+    return m
 
 
 def _prepare_cfg(candidate, cfg: dict) -> dict:
@@ -96,7 +118,7 @@ def screen_candidate(candidate, candles: dict, cfg: dict, window: int = WINDOW,
         res = Backtester(_prepare_cfg(candidate, cfg), window=window).run(candles)
     finally:
         STRATEGY_REGISTRY.pop(candidate.cid, None)
-    m = _metrics(res)
+    m = _metrics(res, n_symbols=len(candles))
     # degenerate over-trading guard: bounds compute for pathological recipes and kills
     # tautological combos cheaply, before the expensive gauntlet variant sweep.
     n_sym = max(len(candles), 1)
@@ -135,7 +157,7 @@ def oos_metrics(candidate, candles_by_symbol: dict, oos_start, cfg: dict,
     def _start(sym):
         return _naive(oos_start[sym] if isinstance(oos_start, dict) else oos_start)
     scored = [t for t in res.trades if _naive(t.entry_time) >= _start(t.symbol)]
-    return _metrics(BacktestResult.from_trades(scored))
+    return _metrics(BacktestResult.from_trades(scored), n_symbols=len(candles_by_symbol))
 
 
 def _vectorizable(candidate) -> dict:

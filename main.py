@@ -683,6 +683,40 @@ def _in_swing_window(cfg: dict) -> bool:
     return parse(s.get("window_start", "15:00")) <= datetime.now().time() <= parse(s.get("window_end", "15:14"))
 
 
+_SWING_MARKER = os.path.join("logs", "swing_last_run.json")
+
+
+def _record_swing_run(result: dict) -> None:
+    """Persist the last completed swing run (date + summary). The once-a-day sleeve has no
+    other 'did it run today?' signal, so this marker is what makes a MISSED run detectable —
+    including across a restart (in-memory swing_done resets, the marker doesn't)."""
+    import json
+    try:
+        os.makedirs("logs", exist_ok=True)
+        with open(_SWING_MARKER, "w", encoding="utf-8") as f:
+            json.dump({"date": datetime.now().date().isoformat(),
+                       "ts": datetime.now().isoformat(timespec="seconds"), "result": result}, f)
+    except OSError as exc:
+        logger.error(f"swing: could not write run marker — {exc}")
+
+
+def _last_swing_run_date() -> str:
+    import json
+    try:
+        with open(_SWING_MARKER, encoding="utf-8") as f:
+            return json.load(f).get("date", "")
+    except (OSError, ValueError):
+        return ""
+
+
+def _swing_window_passed(cfg: dict) -> bool:
+    """True once the day's swing window has fully closed (now past window_end)."""
+    from datetime import time as dtime
+    s = cfg.get("swing", {})
+    end = dtime(*map(int, s.get("window_end", "15:14").split(":")))
+    return datetime.now().time() > end
+
+
 def _get_candles(ctx: dict, symbol: str):
     """Candles for signal generation: tick-built once warm (zero REST calls),
     REST fallback while warming up or if the feed is disabled (SCRUM-106)."""
@@ -1044,6 +1078,7 @@ def run() -> int:
     hb = {"last": time.monotonic()}
     eod_done = None  # date of the last completed EOD — square off/summary once per day
     swing_done = None  # date the swing sleeve last ran (once per day near the close)
+    swing_missed_alerted = None  # date we last warned that the swing window closed with no run
     try:
         while not shutdown["requested"] and not stop_event.is_set():
             _process_commands()
@@ -1071,13 +1106,28 @@ def run() -> int:
                     and swing_done != datetime.now().date() and _in_swing_window(cfg)):
                 try:
                     result = swing.run_daily()
+                    _record_swing_run(result)          # heartbeat: 'the run happened today'
                     ctx["alert"].send_raw(
                         f"Swing sleeve ({ctx['source']}): regime {result['regime']}, "
                         f"{result['entered']} entered, {result['exited']} exited, "
-                        f"{result['open']} open.")
+                        f"{result.get('refused', 0)} refused, {result['open']} open.")
                 except Exception as exc:
                     logger.error(f"Swing run failed: {exc}", exc_info=True)
+                    ctx["alert"].send_raw(
+                        f"⚠️ Swing sleeve ({ctx['source']}): run FAILED — {exc}. "
+                        f"Positions unmanaged this cycle; investigate before next close.")
                 swing_done = datetime.now().date()
+
+            # Heartbeat watchdog: if the swing window has fully closed on a trading day and no
+            # run is recorded for today, the once-a-day entry/exit was MISSED (bot offline,
+            # paused, or errored through the window). Alert ONCE so a silent miss is caught.
+            if (swing is not None and _swing_window_passed(cfg)
+                    and _last_swing_run_date() != datetime.now().date().isoformat()
+                    and swing_missed_alerted != datetime.now().date()):
+                ctx["alert"].send_raw(
+                    f"⚠️ Swing sleeve ({ctx['source']}): window closed with NO run today — "
+                    f"entries/exits were MISSED. Last run: {_last_swing_run_date() or 'never'}.")
+                swing_missed_alerted = datetime.now().date()
 
             _save_state(ctx)
             time.sleep(interval)

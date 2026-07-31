@@ -137,8 +137,9 @@ def evaluate_once(candidate, family: str, candles_by_symbol: dict, lock: dict,
                   registry, n_effective: int, cfg: dict, evaluator=None) -> tuple[str, dict]:
     """The family's single reserve shot. Refuses if the family already has an ACTIVE
     (non-voided) reserve verdict. PASS requires pf >= pf_required(N), trades >= 20, net > 0,
-    AND top3_frac <= the screen's cap — the final gate must be at least as strict as the
-    cheap screen, else outlier-carried edges (a few trades make all the profit) certify."""
+    top3_frac <= the screen's cap (no outlier-carried edge), AND breadth <= the screen's
+    selectivity cap (no market-proxy that opens the whole universe at once) — the final gate
+    must be at least as strict as the cheap screen."""
     from maker.screen import DEFAULTS as _SCREEN
     global _UNLOCKED
     if reserve_verdict(registry.rows(), family) is not None:
@@ -154,7 +155,8 @@ def evaluate_once(candidate, family: str, candles_by_symbol: dict, lock: dict,
     finally:
         _UNLOCKED = False
     passed = (metrics["pf"] >= bar and metrics["trades"] >= 20 and metrics["net"] > 0
-              and metrics.get("top3_frac", 1.0) <= _SCREEN["top3_max_frac"])
+              and metrics.get("top3_frac", 1.0) <= _SCREEN["top3_max_frac"]
+              and metrics.get("breadth", 0.0) <= _SCREEN["max_breadth_frac"])
     status = "ALIVE" if passed else "DEAD"
     registry.record(candidate.cid, family, "RESERVE", status, pf_required=bar, metrics=metrics)
     return status, metrics

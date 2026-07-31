@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Callable, Optional
 
+from src.costs import estimate_costs, trade_leg_values
 from src.logger import get_logger
 from src.market_state import compute_market_state
 from src.regime import RegimeConfig, classify
@@ -99,6 +100,10 @@ class SwingEngine:
         # (never places an order); recorded to the ledger as source='shadow'.
         self.shadow_enabled = s.get("shadow_enabled", True)
         self.shadow: dict = {}
+        # Regime exposure throttle: {regime: multiplier} on NEW entries per cycle. The regime
+        # signal's only real lever over regime-agnostic edges (it can't pick among them). A
+        # missing regime defaults to 1.0 (full appetite); it can only ever reduce entries.
+        self.regime_exposure = s.get("regime_exposure", {})
 
         metas = load_strategy_dir(strategies_dir)
         self.metas = [m for n, m in metas.items() if n in SWING_STRATEGIES]
@@ -119,12 +124,14 @@ class SwingEngine:
 
     def run_daily(self, now: Optional[datetime] = None) -> dict:
         now = now or datetime.now()
+        self._refused = 0                  # signals that fired but couldn't be funded/slotted
         if self.mode == "live":            # Kite is the truth — sync BEFORE managing/entering
             self.reconcile_with_broker(now)
         idx = self.fetch_daily(self.index_symbol, self.lookback_days)
         if idx is None or len(idx) < 60:
             logger.warning("swing: insufficient index daily data — skipping run")
-            return {"regime": "UNKNOWN", "entered": 0, "exited": 0, "open": len(self.positions)}
+            return {"regime": "UNKNOWN", "entered": 0, "exited": 0, "refused": 0,
+                    "open": len(self.positions)}
 
         state = compute_market_state(idx, self.ms_cfg)
         self._prev_regime = classify(state, self._prev_regime, self.regime_cfg)
@@ -147,12 +154,15 @@ class SwingEngine:
             except Exception as exc:
                 logger.error(f"swing: routing persist failed — {exc}")
 
-        names = [f"{a.name}:{a.weight:.2f}" for a in active]
+        # The winners are regime-AGNOSTIC (validated ON in every regime), so the router runs
+        # in pass-through: all edges active every regime. The regime signal's only real lever
+        # is the exposure throttle below — log it explicitly so the router's role is honest.
+        mult = self.regime_exposure.get(regime.regime.value, 1.0)
         logger.warning(f"swing: regime={regime.regime.value} conf={regime.confidence:.2f} "
-                       f"active=[{', '.join(names) or 'NONE'}] exited={exited} "
-                       f"entered={entered} open={len(self.positions)}")
+                       f"router=pass-through({len(active)} edges) exposure_x{mult:g} "
+                       f"exited={exited} entered={entered} open={len(self.positions)}")
         return {"regime": regime.regime.value, "entered": entered, "exited": exited,
-                "open": len(self.positions)}
+                "refused": self._refused, "open": len(self.positions)}
 
     # ── broker reconciliation (LIVE: Kite is the source of truth) ─────────────
 
@@ -249,21 +259,36 @@ class SwingEngine:
             # real fill. PAPER: simulate the exit against the daily bar and book it.
             if self.mode == "live":
                 continue
-            exit_price = reason = None
-            if pos.direction == "BUY":
-                if low <= pos.stop:
-                    exit_price, reason = pos.stop, "stop"
-                elif pos.target and high >= pos.target:
-                    exit_price, reason = pos.target, "target"
-            else:
-                if high >= pos.stop:
-                    exit_price, reason = pos.stop, "stop"
-                elif pos.target and low <= pos.target:
-                    exit_price, reason = pos.target, "target"
+            exit_price, reason = self._simulate_exit(pos, bar)
             if exit_price is not None:
                 self._close(pos, exit_price, reason, now)
                 exited += 1
         return exited
+
+    def _simulate_exit(self, pos: SwingPosition, bar) -> tuple:
+        """PAPER exit fill on the daily bar, modelling gap-through-stop + slippage.
+        A stop the bar GAPPED past fills at the (worse) OPEN, not the stop price — a
+        real GTT/market stop can't fill at a level the market leapt over, so booking
+        the exit at the stop flatters paper P&L and hides tail risk. A configurable
+        slippage further worsens stop fills. Targets fill at the better of open/target
+        (a gap through the target is a fill at the open). Returns (price, reason)."""
+        o, high, low = float(bar["open"]), float(bar["high"]), float(bar["low"])
+        slip = self.cfg.get("paper_trading", {}).get("simulated_slippage_pct", 0.0) / 100.0
+        if pos.direction == "BUY":
+            if low <= pos.stop:
+                px = min(o, pos.stop)                 # gap-down opens below the stop -> fill there
+                return round(px * (1 - slip), 2), "stop"
+            if pos.target and high >= pos.target:
+                px = max(o, pos.target)               # gap-up opens above the target
+                return round(px, 2), "target"
+        else:
+            if high >= pos.stop:
+                px = max(o, pos.stop)
+                return round(px * (1 + slip), 2), "stop"
+            if pos.target and low <= pos.target:
+                px = min(o, pos.target)
+                return round(px, 2), "target"
+        return None, None
 
     # ── entries ───────────────────────────────────────────────────────────────
 
@@ -297,6 +322,10 @@ class SwingEngine:
         from collections import Counter
         freq = Counter(name for _, name, _, _, _ in fires)
         fires.sort(key=lambda f: (freq[f[1]], -f[3]))
+        # Regime exposure throttle: cap NEW entries THIS cycle by the regime's risk appetite.
+        mult = self.regime_exposure.get(regime.regime.value, 1.0)
+        slots_free = max(0, self.max_positions - len(self.positions))
+        budget = slots_free if mult >= 1.0 else int(slots_free * mult)
         entered = 0
         for sym, name, sig, _w, atr in fires:
             deployed = sum(p.entry_price * p.quantity for p in self.positions.values())
@@ -305,6 +334,8 @@ class SwingEngine:
             pos_value = qty * sig.entry_price
             if len(self.positions) >= self.max_positions:
                 self._refuse(sym, name, sig, "slot_full", free, now)
+            elif entered >= budget:
+                self._refuse(sym, name, sig, "regime_throttle", free, now)
             elif qty <= 0 or pos_value < self.min_position_value:
                 self._refuse(sym, name, sig, "insufficient_capital", free, now)
             elif self._open(sym, name, sig, qty, regime.regime.value, atr, now):
@@ -315,6 +346,7 @@ class SwingEngine:
         """A real signal fired but capital couldn't fund a viable position — do NOT trade;
         maintain existing positions and NOTE the refused trigger (the missed-opportunity
         record at small capital)."""
+        self._refused = getattr(self, "_refused", 0) + 1
         logger.warning(f"swing REFUSED {sig.direction} {sym} [{strat}] reason={reason} "
                        f"free=Rs.{free:.0f} entry={sig.entry_price} "
                        f"stop={sig.stop_loss} target={sig.target}")
@@ -359,11 +391,22 @@ class SwingEngine:
                                   taken=True, strategy=strat)
         return True
 
+    def _net_pnl(self, pos: SwingPosition, exit_price: float) -> tuple[float, float, float]:
+        """(gross, cost, net) for a round trip — costs are the Zerodha CNC delivery
+        charges (STT both legs, exchange/SEBI, stamp, flat DP charge, GST) from the
+        `costs:` config. The flat DP charge dominates at small size, so net P&L is
+        what actually matters — every recorded swing/shadow trade books NET."""
+        gross = ((exit_price - pos.entry_price) if pos.direction == "BUY"
+                 else (pos.entry_price - exit_price)) * pos.quantity
+        buy_v, sell_v = trade_leg_values(pos.direction, pos.entry_price, exit_price, pos.quantity)
+        cost = estimate_costs(buy_v, sell_v, self.cfg)
+        return gross, cost, gross - cost
+
     def _close(self, pos: SwingPosition, exit_price: float, reason: str, now: datetime):
-        pnl = ((exit_price - pos.entry_price) if pos.direction == "BUY"
-               else (pos.entry_price - exit_price)) * pos.quantity
+        gross, cost, pnl = self._net_pnl(pos, exit_price)
         logger.warning(f"swing EXIT {pos.symbol} @ {exit_price:.2f} ({reason}) "
-                       f"pnl=Rs.{pnl:.0f}  held since {pos.entry_date}")
+                       f"net=Rs.{pnl:.0f} (gross Rs.{gross:.0f} - cost Rs.{cost:.0f})  "
+                       f"held since {pos.entry_date}")
         if self.db is not None:
             self.db.record_trade(source=self.mode, strategy=pos.strategy, regime=pos.regime,
                                  symbol=pos.symbol, direction=pos.direction, quantity=pos.quantity,
@@ -375,30 +418,40 @@ class SwingEngine:
     # ── shadow book (unconstrained parallel ledger — the "what if" P&L) ────────
 
     def _scan_shadow(self, regime, active: list, now: datetime) -> None:
-        """Open an UNCONSTRAINED shadow trade for every firing signal (including ones the real
-        book refused), one per (symbol, strategy), sized to a fixed notional. This is how we
-        learn whether the trades Rs.5000 couldn't fund would have won or lost."""
+        """Realistic-portfolio counterfactual: the SAME account (capital, per-name cap,
+        one position per symbol, NET costs) but WITHOUT the max_positions slot limit the
+        real book obeys. So the shadow equity curve is actually achievable at real capital
+        — and, by holding every symbol the slot cap turned away, it measures exactly what
+        that position-count cap costs (or saves). Keyed sym|strat (first strategy to fire
+        wins the symbol). Not an unbounded per-signal ledger — that implied capital that
+        doesn't exist."""
+        held = {k.split("|")[0] for k in self.shadow}          # symbols already in the shadow book
+        deployed = sum(p.entry_price * p.quantity for p in self.shadow.values())
         for sym in self.cfg["trading"]["watchlist"]:
+            if sym in held:
+                continue                        # one shadow position per symbol (realistic)
+            if deployed >= self.capital:
+                break                           # account fully deployed — cannot fund more
             df = self.fetch_daily(sym, self.lookback_days)
             if df is None or len(df) < 210:
                 continue
-            for a in active:
-                key = f"{sym}|{a.name}"
-                if key in self.shadow:
-                    continue                    # already tracking this strategy on this name
+            for a in active:                    # first firing strategy wins the symbol
                 scfg = {**self.cfg["strategy"], **a.param_set.params, "name": a.name}
                 sig = generate_signal(sym, df, scfg)
                 if (sig.direction == "HOLD" or sig.entry_price <= 0
                         or abs(sig.entry_price - sig.stop_loss) <= 0):
                     continue
-                qty = int(self.max_position_value / sig.entry_price)   # SAME sizing as paper
+                free = self.capital - deployed
+                qty = int(min(free, self.max_position_value) / sig.entry_price)
                 if qty < 1:
-                    continue            # can't afford at paper capital -> not shadowed (as real)
-                self.shadow[key] = SwingPosition(
+                    break                       # can't fund one share here -> skip the symbol
+                self.shadow[f"{sym}|{a.name}"] = SwingPosition(
                     symbol=sym, strategy=a.name, direction=sig.direction,
                     entry_price=sig.entry_price, quantity=qty, stop=sig.stop_loss,
                     target=sig.target, entry_date=now.date().isoformat(),
                     regime=regime.regime.value, peak=sig.entry_price, atr=_atr(df, 14) or 0.0)
+                deployed += sig.entry_price * qty
+                break
 
     def _manage_shadow(self, now: datetime) -> None:
         """Trail/exit the shadow book on the daily bar and book realized shadow P&L to the
@@ -419,20 +472,9 @@ class SwingEngine:
                 else:
                     pos.peak = min(pos.peak, close)
                     pos.stop = min(pos.stop, pos.peak + self.atr_mult * atr)
-            exit_price = reason = None
-            if pos.direction == "BUY":
-                if low <= pos.stop:
-                    exit_price, reason = pos.stop, "stop"
-                elif pos.target and high >= pos.target:
-                    exit_price, reason = pos.target, "target"
-            else:
-                if high >= pos.stop:
-                    exit_price, reason = pos.stop, "stop"
-                elif pos.target and low <= pos.target:
-                    exit_price, reason = pos.target, "target"
+            exit_price, reason = self._simulate_exit(pos, bar)
             if exit_price is not None:
-                pnl = ((exit_price - pos.entry_price) if pos.direction == "BUY"
-                       else (pos.entry_price - exit_price)) * pos.quantity
+                _g, _c, pnl = self._net_pnl(pos, exit_price)      # book NET (same cost model)
                 if self.db is not None:
                     self.db.record_trade(source="shadow", strategy=pos.strategy, regime=pos.regime,
                                          symbol=pos.symbol, direction=pos.direction,

@@ -73,6 +73,20 @@ def _run_one_tf(args, store, lock, tf, intraday) -> dict:
         print(f"[{tf}] no history >{min_bars} bars in the store — skipped.")
         return {}
     candles = {s: store.get_candles(s, tf) for s in syms}
+    # Survivorship / newcomer-bias audit: DROP names whose history doesn't span the window
+    # (recent listings can be cherry-picked); DISCLOSE the residual true-survivorship bias
+    # (delisted names absent from today's universe — uncorrectable without point-in-time
+    # constituents). Opt out with --keep-partial.
+    from maker.survivorship import audit_coverage, drop_partial_history
+    if getattr(args, "keep_partial", False):
+        rep = audit_coverage(candles)
+    else:
+        candles, rep = drop_partial_history(candles)
+        syms = list(candles)
+    if rep["partial"]:
+        print(f"[{tf}] survivorship audit: dropped {len(rep['partial'])} partial-history name(s) "
+              f"{[p['symbol'] for p in rep['partial']]}; {rep['coverage_frac']:.0%} full-window.")
+    print(f"[{tf}] NOTE: {rep['residual_bias']}")
     tf_stamp = tf if intraday else None      # stamp intraday candidates with their timeframe
     print(f"Campaign [{args.sleeve}/{tf}]: {args.max_trials} candidates, seed {args.seed}, "
           f"{len(syms)} symbols, workers {args.workers}, reserve {'ON' if lock else 'off'}...")
@@ -122,6 +136,9 @@ def main(argv=None) -> int:
                    help="intraday: 'all' or a comma list of 1min/5min/15min/30min/1hr")
     g.add_argument("--db", default="maker_trials.db",
                    help="registry file under data_cache/ (use a separate db for intraday)")
+    g.add_argument("--keep-partial", action="store_true",
+                   help="keep newcomer/partial-history names (default drops them to cut "
+                        "survivorship bias)")
     for name in ("screen", "gauntlet", "reserve"):
         sub.add_parser(name)
     args = ap.parse_args(argv)

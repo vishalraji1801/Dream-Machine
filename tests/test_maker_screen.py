@@ -33,6 +33,28 @@ def test_screen_passes_clean_candidate():
     assert passed and reason == "pass"
 
 
+def test_screen_kills_low_selectivity():
+    # a market-proxy that opens most of the universe on a single day (the "flood") is killed
+    # even with great PF/net/top3 — selectivity is a distinct gate.
+    passed, reason = screen_decision(
+        {"trades": 200, "pf": 2.0, "net": 5000, "top3_frac": 0.20, "breadth": 0.90})
+    assert not passed and reason == "low_selectivity"
+
+
+def test_breadth_peaks_when_all_names_open_same_day():
+    from types import SimpleNamespace
+
+    from maker.screen import _breadth
+    day = pd.Timestamp("2026-03-02")
+    # 10 names, all entered the SAME day -> breadth 1.0 (a market proxy)
+    flood = [SimpleNamespace(entry_time=day) for _ in range(10)]
+    assert _breadth(flood, 10) == 1.0
+    # 10 names spread one-per-day -> breadth 0.1 (selective)
+    spread = [SimpleNamespace(entry_time=day + pd.Timedelta(days=i)) for i in range(10)]
+    assert _breadth(spread, 10) == 0.1
+    assert _breadth([], 10) == 0.0 and _breadth(flood, 1) == 0.0   # degenerate guards
+
+
 def test_screen_candidate_runs_end_to_end():
     # integration smoke: compile -> backtest -> metrics, on synthetic candles.
     cfg = yaml.safe_load(open(os.path.join("config", "config.yaml")))
@@ -54,7 +76,7 @@ def test_screen_candidate_runs_end_to_end():
         "exit": ("r_multiple", {"r": 2})})
     passed, reason, m = screen_candidate(cand, candles, cfg, window=120)
     assert isinstance(passed, bool)
-    assert set(m) == {"trades", "pf", "net", "top3_frac", "rank"}
+    assert set(m) == {"trades", "pf", "net", "top3_frac", "rank", "breadth"}
 
 
 def test_screen_applies_slippage_for_intraday_only():
