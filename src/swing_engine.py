@@ -93,6 +93,8 @@ class SwingEngine:
         # "hold what you have, note every signal you couldn't fund" rather than dust trades.
         self.max_position_value = s.get("max_position_value", 120_000)
         self.min_position_value = s.get("min_position_value", 3_000)
+        # Edge-aware cost gate: refuse if round-trip cost > this fraction of expected gross edge.
+        self.max_cost_to_edge = s.get("max_cost_to_edge", 0.20)
         # Shadow book: a parallel ledger that takes EVERY signal (incl. the ones the real book
         # refuses for slot/capital), sized at the SAME per-position capital as paper
         # (max_position_value), and tracks its hypothetical P&L — so you learn, at your real
@@ -338,9 +340,24 @@ class SwingEngine:
                 self._refuse(sym, name, sig, "regime_throttle", free, now)
             elif qty <= 0 or pos_value < self.min_position_value:
                 self._refuse(sym, name, sig, "insufficient_capital", free, now)
+            elif not self._edge_covers_cost(sig, qty):
+                self._refuse(sym, name, sig, "cost_exceeds_edge", free, now)
             elif self._open(sym, name, sig, qty, regime.regime.value, atr, now):
                 entered += 1             # (best-ranked fill first; rest get refused for capital)
         return entered
+
+    def _edge_covers_cost(self, sig, qty: int) -> bool:
+        """True iff the round-trip cost to the target is <= max_cost_to_edge of the expected
+        gross edge (target distance x qty). Rejects structurally-unprofitable trades where the
+        flat DP charge / STT would eat the move before it happens - independent of the notional
+        floor. A missing/degenerate target (no edge estimate) is allowed through (not this gate's
+        job)."""
+        edge = abs((sig.target or 0.0) - sig.entry_price) * qty
+        if edge <= 0:
+            return True
+        buy_v, sell_v = trade_leg_values(sig.direction, sig.entry_price, sig.target, qty)
+        cost = estimate_costs(buy_v, sell_v, self.cfg)
+        return (cost / edge) <= self.max_cost_to_edge
 
     def _refuse(self, sym, strat, sig, reason: str, free: float, now: datetime) -> None:
         """A real signal fired but capital couldn't fund a viable position — do NOT trade;

@@ -95,16 +95,20 @@ def gather_status(config_path: str = os.path.join("config", "config.yaml")) -> d
         status["market"] = "unknown"
 
     try:
+        from src.go_live import certified_only
         from src.trade_db import TradeDB
         db = TradeDB()
-        paper = db.trades(source="paper")
+        all_paper = db.trades(source="paper")
+        paper = certified_only(all_paper)          # gate on CERTIFIED evidence only (excl. mkg_)
         status["paper_trades"] = len(paper)
+        status["paper_uncertified"] = len(all_paper) - len(paper)
         status["paper_net_pnl"] = round(sum(t["pnl"] for t in paper), 2)
         gate = evaluate_readiness(paper, cfg.get("go_live", {}))
         status["gate_ready"] = gate["ready"]
         status["gate_checks"] = {k: v[0] for k, v in gate["checks"].items()}
     except Exception:
         status["paper_trades"] = 0
+        status["paper_uncertified"] = 0
         status["paper_net_pnl"] = 0.0
         status["gate_ready"] = False
         status["gate_checks"] = {}
@@ -125,7 +129,8 @@ def format_status(status: dict) -> str:
         f" Market         : {status['market']}",
         f" Kite token     : {'fresh (today)' if status['token_fresh_today'] else 'STALE — run: bot auth'}"
         + (f"  [{status['token_time']}]" if status.get("token_time") else ""),
-        f" Paper trades   : {status['paper_trades']} (net Rs.{status['paper_net_pnl']})",
+        f" Paper trades   : {status['paper_trades']} certified (net Rs.{status['paper_net_pnl']})"
+        + (f"  [+{status['paper_uncertified']} mkg_ excluded]" if status.get('paper_uncertified') else ""),
         f" Go-live gate   : {'READY' if status['gate_ready'] else 'not yet'}",
     ]
     for name, passed in status.get("gate_checks", {}).items():
@@ -180,26 +185,45 @@ def shadow_report(state_path: str = os.path.join("logs", "swing_state.json"),
         if u is not None:
             d["upnl"] += u; d["marked"] += 1
 
+    def _cohort(s):     # certified reserve edge vs uncertified gauntlet survivor
+        return "UNCERTIFIED" if str(s).startswith("mkg_") else "CERTIFIED"
+
     strategies = sorted(set(realized) | set(unreal),
-                        key=lambda s: realized.get(s, {}).get("net", 0), reverse=True)
+                        key=lambda s: (_cohort(s), -realized.get(s, {}).get("net", 0)))
     L = ["=" * 78,
-         " SWING SHADOW BOOK — every signal tracked unconstrained (source='shadow')",
+         " SWING SHADOW BOOK — cohorts reported SEPARATELY (source='shadow')",
+         " CERTIFIED = reserve-passed maker_/donchian.  UNCERTIFIED = mkg_ (gauntlet only,",
+         " NOT go-live evidence — shown for forward-testing insight only).",
          "=" * 78,
-         f" {'strategy':16} {'closed':>6} {'realized':>10} {'win%':>5} {'open':>5} {'unrealized':>11}",
+         f" {'strategy':16} {'cohort':11} {'closed':>6} {'realized':>10} {'win%':>5} {'open':>5} {'unrealized':>11}",
          " " + "-" * 74]
     tot = {"n": 0, "net": 0.0, "wins": 0, "open": 0, "upnl": 0.0}
+    coh = {"CERTIFIED": dict(tot), "UNCERTIFIED": dict(tot)}
+    prev = None
     for s in strategies:
+        c = _cohort(s)
+        if prev is not None and c != prev:      # cohort subtotal line at each boundary
+            ct = coh[prev]; cwin = f"{100 * ct['wins'] // ct['n']}" if ct["n"] else "-"
+            L.append(f" {'  subtotal '+prev:27} {ct['n']:>6} {ct['net']:>+10,.0f} {cwin:>5} "
+                     f"{ct['open']:>5} Rs.{ct['upnl']:>+8,.0f}")
+            L.append(" " + "-" * 74)
+        prev = c
         rz = realized.get(s, {"n": 0, "net": 0.0, "wins": 0})
         uz = unreal.get(s, {"n": 0, "upnl": 0.0, "marked": 0})
         win = f"{100 * rz['wins'] // rz['n']}" if rz["n"] else "-"
         umark = f"Rs.{uz['upnl']:>+8,.0f}" if uz["marked"] else (f"{uz['n']} open" if uz["n"] else "-")
-        L.append(f" {s:16} {rz['n']:>6} {rz['net']:>+10,.0f} {win:>5} {uz['n']:>5} {umark:>11}")
-        tot["n"] += rz["n"]; tot["net"] += rz["net"]; tot["wins"] += rz["wins"]
-        tot["open"] += uz["n"]; tot["upnl"] += uz["upnl"]
-    L.append(" " + "-" * 74)
+        L.append(f" {s:16} {c:11} {rz['n']:>6} {rz['net']:>+10,.0f} {win:>5} {uz['n']:>5} {umark:>11}")
+        for acc in (tot, coh[c]):
+            acc["n"] += rz["n"]; acc["net"] += rz["net"]; acc["wins"] += rz["wins"]
+            acc["open"] += uz["n"]; acc["upnl"] += uz["upnl"]
+    if prev is not None:                        # final cohort's subtotal
+        ct = coh[prev]; cwin = f"{100 * ct['wins'] // ct['n']}" if ct["n"] else "-"
+        L.append(f" {'  subtotal '+prev:27} {ct['n']:>6} {ct['net']:>+10,.0f} {cwin:>5} "
+                 f"{ct['open']:>5} Rs.{ct['upnl']:>+8,.0f}")
+    L.append(" " + "=" * 74)
     twin = f"{100 * tot['wins'] // tot['n']}" if tot["n"] else "-"
-    L.append(f" {'TOTAL':16} {tot['n']:>6} {tot['net']:>+10,.0f} {twin:>5} {tot['open']:>5} "
-             f"Rs.{tot['upnl']:>+8,.0f}")
+    L.append(f" {'TOTAL (both cohorts)':27} {tot['n']:>6} {tot['net']:>+10,.0f} {twin:>5} "
+             f"{tot['open']:>5} Rs.{tot['upnl']:>+8,.0f}")
     L.append("=" * 78)
     if not tot["n"] and not tot["open"]:
         L.append(" (no shadow trades yet — runs accumulate from the next `bot.py run`)")

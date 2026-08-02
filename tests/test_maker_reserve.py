@@ -100,8 +100,15 @@ def test_void_supersedes_and_reopens_the_single_shot(tmp_path):
     # 1. a first (say buggy) DEAD verdict is recorded
     R.evaluate_once(c, fam, {"AAA": _df()}, lock, reg, 100, {}, evaluator=_fake_fail)
     assert R.reserve_verdict(reg.rows(), fam)["status"] == "DEAD"
-    # 2. invalidate it -> family may take a fresh shot again
-    R.invalidate_reserve(reg, fam, reason="bug: 0-trade warmup")
+    # 2. invalidate it -> family may take a fresh shot again. RULE 2 escape hatch demands
+    #    the golive-style ceremony: confirm=True + a reason, logged as an epoch event.
+    with pytest.raises(PermissionError):
+        R.invalidate_reserve(reg, fam, reason="bug")            # no confirm -> refused
+    with pytest.raises(ValueError):
+        R.invalidate_reserve(reg, fam, reason="", confirm=True)  # empty reason -> refused
+    vid = R.invalidate_reserve(reg, fam, reason="bug: 0-trade warmup", confirm=True)
+    void_row = next(r for r in reg.rows() if r["id"] == vid)
+    assert "RESERVE EPOCH VOID" in void_row["notes"] and "git_sha" in void_row["notes"]
     assert R.reserve_verdict(reg.rows(), fam) is None
     # 3. re-run -> new verdict stands as the effective one
     status, _ = R.evaluate_once(c, fam, {"AAA": _df()}, lock, reg, 100, {}, evaluator=_fake_pass)

@@ -125,12 +125,38 @@ def effective_reserve_table(rows) -> dict:
     return out
 
 
-def invalidate_reserve(registry, family: str, reason: str) -> int:
-    """Append a VOID marker superseding the family's prior reserve verdict — the
-    append-only way to correct an invalid single-shot (RULE 1 + RULE 2 preserved)."""
+def _git_sha() -> str:
+    import subprocess
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=os.path.dirname(os.path.abspath(__file__)),
+            stderr=subprocess.DEVNULL, text=True).strip() or "unknown"
+    except Exception:
+        return "unknown"
+
+
+def invalidate_reserve(registry, family: str, reason: str, confirm: bool = False) -> int:
+    """Append a VOID marker superseding the family's prior reserve verdict — the ONLY escape
+    hatch from RULE 2's single-shot exam. Because it can silently reset a family's FINAL exam,
+    it demands the same ceremony as `golive --confirm`: an explicit confirm=True plus a full
+    epoch-event record (reason, the superseded cid, its status, git SHA, timestamp) written
+    into the append-only log. Refuses without confirm, or without a non-empty reason. A
+    function that spends your only shot must not be quieter than the one that spends money."""
+    if not confirm:
+        raise PermissionError(
+            "invalidate_reserve resets a family's single-shot exam — pass confirm=True; "
+            "it is logged as an epoch event (like golive --confirm)")
+    if not reason or not reason.strip():
+        raise ValueError("invalidate_reserve requires a non-empty reason (audit trail)")
     current = reserve_verdict(registry.rows(), family)
     cid = current["cid"] if current is not None else ""
-    return registry.record(cid, family, "RESERVE", "VOID", notes=f"invalidated: {reason}")
+    event = {"reason": reason.strip(), "superseded_cid": cid,
+             "superseded_status": current["status"] if current is not None else None,
+             "git_sha": _git_sha(),
+             "ts": datetime.now().isoformat(timespec="seconds")}
+    return registry.record(cid, family, "RESERVE", "VOID",
+                           notes="RESERVE EPOCH VOID " + json.dumps(event, sort_keys=True))
 
 
 def evaluate_once(candidate, family: str, candles_by_symbol: dict, lock: dict,
@@ -154,6 +180,17 @@ def evaluate_once(candidate, family: str, candles_by_symbol: dict, lock: dict,
         metrics = ev(candidate, eval_by_symbol, cfg)
     finally:
         _UNLOCKED = False
+    # Monte-Carlo permutation test: REPORT-ONLY for now (records p, does not gate). Guarded so
+    # a permute failure never breaks the single-shot exam. Runs on the reserve eval frames.
+    pcfg = cfg.get("maker", {}).get("permute", {}) if isinstance(cfg, dict) else {}
+    if pcfg.get("enabled", True):
+        try:
+            from maker.permute import permutation_pvalue
+            metrics.update(permutation_pvalue(
+                candidate, eval_by_symbol, cfg,
+                n_perms=int(pcfg.get("n_perms", 100)), window=int(pcfg.get("window", 220))))
+        except Exception:
+            metrics["permutation_p"] = None      # never let the report break the verdict
     passed = (metrics["pf"] >= bar and metrics["trades"] >= 20 and metrics["net"] > 0
               and metrics.get("top3_frac", 1.0) <= _SCREEN["top3_max_frac"]
               and metrics.get("breadth", 0.0) <= _SCREEN["max_breadth_frac"])

@@ -15,6 +15,20 @@ _DEFAULT_CRITERIA = {
     "min_win_rate": 45.0,
 }
 
+# Gauntlet survivors that have NOT sat the single-shot reserve exam are wired as mkg_* and
+# forward-test in paper alongside the reserve-CERTIFIED maker_* edges. That is fine as free
+# forward evidence — but their P&L must NEVER count toward the go-live decision: (a) it would
+# let an uncertified edge help flip the switch on the certified ones, and (b) if you later pick
+# which mkg_ families to send to the reserve based on this paper P&L, you have selected on
+# out-of-sample evidence before the single shot (the "never reuse OOS" failure via a side door).
+UNCERTIFIED_PREFIXES = ("mkg_",)
+
+
+def certified_only(trades: list[dict]) -> list[dict]:
+    """Drop trades from uncertified (mkg_*) strategies — go-live evidence is certified-only."""
+    return [t for t in trades
+            if not str(t.get("strategy", "")).startswith(UNCERTIFIED_PREFIXES)]
+
 
 def evaluate_readiness(trades: list[dict], criteria: Optional[dict] = None) -> dict:
     """

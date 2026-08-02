@@ -67,7 +67,7 @@ def cmd_shadow(_args) -> int:
 
 def cmd_golive(args) -> int:
     import yaml
-    from src.go_live import format_report
+    from src.go_live import certified_only, format_report
     from src.ops import get_trading_mode, golive_decision, set_trading_mode
     from src.trade_db import TradeDB
 
@@ -77,7 +77,11 @@ def cmd_golive(args) -> int:
 
     with open(os.path.join("config", "config.yaml")) as f:
         cfg = yaml.safe_load(f)
-    paper = TradeDB().trades(source="paper")
+    all_paper = TradeDB().trades(source="paper")
+    paper = certified_only(all_paper)          # uncertified mkg_* never count toward the gate
+    excluded = len(all_paper) - len(paper)
+    if excluded:
+        print(f"(go-live evidence excludes {excluded} uncertified mkg_ paper trade(s))")
     decision = golive_decision(paper, cfg.get("go_live", {}), force=args.force)
     print(format_report(decision))
 

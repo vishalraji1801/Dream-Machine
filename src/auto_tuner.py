@@ -116,12 +116,24 @@ def pick_winner(results: list[dict], accept: Optional[dict] = None) -> Optional[
 
 
 def write_overlay(winner: dict, cfg: dict,
-                  path: Optional[str] = None) -> tuple[bool, str]:
+                  path: Optional[str] = None, drift=None) -> tuple[bool, str]:
     """
-    Write the winner into the AI overlay. The overlay is validated with the
-    same hard-bounds validator the bot uses at startup; an invalid overlay is
-    NOT written. Returns (written, message).
+    Write the winner into the overlay (a LIVE channel). The overlay is validated with the
+    same hard-bounds validator the bot uses at startup; an invalid overlay is NOT written.
+
+    DRIFT GUARD (src/drift_audit.py): clearing an ABSOLUTE bar (trades/PF/net) is not enough
+    to overwrite live parameters - the winner must also BEAT the current baseline, or tuned
+    noise can drift into production. When overlay.require_drift_audit is set (it is, in the
+    shipped config), a write is refused unless a passing DriftVerdict (recommend_revert=False)
+    is supplied - i.e. the overlay is FROZEN until the audit says the change beats baseline.
+    Returns (written, message).
     """
+    require = cfg.get("overlay", {}).get("require_drift_audit", False)
+    if require and (drift is None or getattr(drift, "recommend_revert", True)):
+        why = "no drift audit supplied" if drift is None else drift.reason
+        return False, (f"overlay FROZEN: a write requires a passing drift audit (winner must "
+                       f"beat baseline; src/drift_audit.py) - {why}")
+
     from src.overlay import _ADJUSTABLE
     adjustable = _ADJUSTABLE["strategy"]
     params = {k: v for k, v in winner["params"].items() if k in adjustable}

@@ -176,6 +176,9 @@ data_feed:                   # tick-built candles (SCRUM-106): zero per-cycle RE
 overlay:
   overlay_enabled: true                      # apply the auto-tuner's validated overlay at startup
   overlay_path: "config/overlay.yaml"        # written by the auto-tuner (walk-forward winner)
+  require_drift_audit: true                  # FREEZE: the tuner may not overwrite live params
+                                             # unless the winner beats baseline (drift_audit).
+                                             # Clearing an absolute bar alone is not enough.
   # Hard bounds the overlay can never exceed (the safety sandbox):
   allowed_strategies: ["bb_mean_reversion", "donchian_trend_tsl", "supertrend", "orb_nifty",
                        "volatility_contraction_breakout", "double_reversal",
@@ -272,6 +275,11 @@ swing:
   # record) rather than taken as a dust trade. At Rs.10L / 20% this is ~5 positions of Rs.2L.
   max_position_value: 200000  # per-position rupee cap (= 20% of Rs.10L; 5 concurrent names)
   min_position_value: 25000   # below this, refuse+log (delivery costs would eat the edge)
+  # Edge-aware cost gate: refuse a trade whose estimated round-trip cost exceeds this
+  # fraction of its expected gross edge (target distance x qty). The flat DP charge means a
+  # small position can be structurally unprofitable before it even moves; this catches that
+  # at sizing time regardless of the notional floor above. 0.20 = costs may not eat >20% of edge.
+  max_cost_to_edge: 0.20
   atr_stop_mult: 6.0      # donchian trailing-stop ATR multiple
   lookback_days: 320      # daily bars fetched (>= 200 for the breakout window)
   product: CNC            # delivery (overnight); intraday sleeve uses MIS
@@ -285,6 +293,13 @@ swing:
   # Kite Connect exposes only STATIC GTT triggers (no native trailing SL), so the bot
   # ratchets the stop itself and MODIFIES the GTT each day it moves. Backtest simulates
   # the ATR trail directly.
+
+# Strategy Maker knobs.
+maker:
+  permute:                 # Monte-Carlo permutation test at the reserve exam (section: permute.py)
+    enabled: true          # REPORT-ONLY today: records permutation_p, does not gate the verdict
+    n_perms: 100           # permutations per exam (higher = tighter p, slower)
+    window: 220            # backtester warmup window (match screen.WINDOW)
 
 events:
   path: "config/events.yaml"   # market-wide + per-stock event days to skip

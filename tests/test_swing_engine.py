@@ -241,6 +241,18 @@ def test_shadow_book_tracks_signals_and_books_pnl(tmp_path):
     assert any(t.get("source") == "shadow" for t in db.trades)
 
 
+def test_edge_covers_cost_gate(tmp_path):
+    # a tiny-edge trade (1 rupee target, 1 share) is structurally unprofitable once the flat
+    # DP charge + STT are counted -> the gate refuses it; a real-size trade passes.
+    eng = SwingEngine(_cfg(), "paper", FakeDB(), _fetch({}), state_path=str(tmp_path / "sw.json"))
+    tiny = _Sig(direction="BUY", entry=100.0, stop=98.0, target=101.0)
+    big = _Sig(direction="BUY", entry=100.0, stop=90.0, target=110.0)
+    assert eng._edge_covers_cost(tiny, qty=1) is False        # cost dwarfs a 1-rupee edge
+    assert eng._edge_covers_cost(big, qty=1000) is True       # 10k edge easily covers cost
+    # degenerate target (no edge estimate) is allowed through - not this gate's job
+    assert eng._edge_covers_cost(_Sig(target=0.0), qty=10) is True
+
+
 def test_shadow_book_persists(tmp_path):
     up = _daily([100 + i for i in range(260)])
     data = {"NIFTY 50": up, "AAA": _daily([100 + i * 0.8 for i in range(260)]),

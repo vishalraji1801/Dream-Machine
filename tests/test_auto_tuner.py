@@ -114,6 +114,27 @@ def test_write_overlay_valid_and_loadable(tmp_path):
     assert raw["meta"]["written_by"] == "auto_tuner"
 
 
+def test_write_overlay_frozen_without_drift_audit(tmp_path):
+    # with require_drift_audit on, clearing the absolute bar is NOT enough: the tuner may
+    # only overwrite LIVE params when the winner beats baseline (drift_audit).
+    from src.drift_audit import DriftVerdict
+    cfg = _cfg(tmp_path)
+    cfg["overlay"]["require_drift_audit"] = True
+    winner = _result("breakout_retest")
+    winner["params"] = {"br_lookback": 20, "br_tol_pct": 0.3}
+
+    written, msg = write_overlay(winner, cfg)                       # no audit -> frozen
+    assert written is False and "FROZEN" in msg
+
+    losing = DriftVerdict(False, 40.0, 60.0, -20.0, 30, recommend_revert=True,
+                          reason="underperforming_baseline_revert")
+    assert write_overlay(winner, cfg, drift=losing)[0] is False    # loses to baseline -> frozen
+
+    winning = DriftVerdict(True, 80.0, 50.0, 30.0, 30, recommend_revert=False,
+                           reason="beating_baseline")
+    assert write_overlay(winner, cfg, drift=winning)[0] is True    # beats baseline -> written
+
+
 def test_write_overlay_rejects_unlisted_strategy(tmp_path):
     cfg = _cfg(tmp_path)
     winner = _result("wild_martingale")
