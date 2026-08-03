@@ -12,6 +12,7 @@ F&O-underlying whitelist (inherently liquid, MIS-friendly) plus a price band.
 """
 import csv
 import os
+import time
 from datetime import datetime
 from typing import Optional
 
@@ -95,14 +96,30 @@ class UniverseBuilder:
         # ~2000 NSE EQ symbols chunked at 1000 blew past it. 200 keeps the query string well
         # under any reasonable URI limit even for the longest tradingsymbols.
         chunk_size = 200
+        # ~2000 symbols / 200 = ~10 chunks. Firing them back-to-back with no delay trips
+        # Kite's per-second rate limit (429 "Too many requests") — a NEW failure mode this
+        # smaller chunk size introduced. Throttle between chunks, and retry a single 429 once
+        # after a short backoff (transient) rather than immediately writing off 200 symbols.
+        pause_sec = self._u.get("ltp_request_pause_sec", 0.5)
         for chunk_start in range(0, len(symbols), chunk_size):
+            if chunk_start > 0:
+                time.sleep(pause_sec)
             chunk = symbols[chunk_start:chunk_start + chunk_size]
-            try:
-                data = kite.ltp(chunk)
-            except Exception as exc:
-                logger.warning(f"LTP snapshot chunk failed ({exc}) — "
-                               f"{len(chunk)} symbol(s) skipped for the price band")
-                continue                                 # one bad chunk doesn't sink the rest
+            data = None
+            for attempt in range(2):                     # one retry for a transient rate limit
+                try:
+                    data = kite.ltp(chunk)
+                    break
+                except Exception as exc:
+                    if attempt == 0:
+                        logger.info(f"LTP chunk rate-limited/failed ({exc}) — retrying once "
+                                    f"after backoff")
+                        time.sleep(pause_sec * 3)
+                    else:
+                        logger.warning(f"LTP snapshot chunk failed ({exc}) — "
+                                       f"{len(chunk)} symbol(s) skipped for the price band")
+            if data is None:
+                continue                                  # one bad chunk doesn't sink the rest
             for key, v in data.items():
                 ltp_map[key.split(":", 1)[1]] = v.get("last_price")
         if symbols and not ltp_map:
