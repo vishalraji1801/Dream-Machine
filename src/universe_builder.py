@@ -88,17 +88,25 @@ class UniverseBuilder:
         instruments = kite.instruments(self._exchange)
         fno = self._fno_underlyings(kite) if self._u.get("fno_only", True) else set()
         ltp_map = {}
-        try:
-            symbols = [f"{self._exchange}:{i['tradingsymbol']}" for i in instruments
-                       if i.get("instrument_type") == "EQ"]
-            # /quote/ltp allows up to 1000 per request; chunk it
-            for chunk_start in range(0, len(symbols), 1000):
-                chunk = symbols[chunk_start:chunk_start + 1000]
+        symbols = [f"{self._exchange}:{i['tradingsymbol']}" for i in instruments
+                   if i.get("instrument_type") == "EQ"]
+        # kite.ltp() is a GET with one `i=` query param per instrument — the real ceiling is
+        # the server's URI-length limit (414), not Kite's documented 1000-per-request cap.
+        # ~2000 NSE EQ symbols chunked at 1000 blew past it. 200 keeps the query string well
+        # under any reasonable URI limit even for the longest tradingsymbols.
+        chunk_size = 200
+        for chunk_start in range(0, len(symbols), chunk_size):
+            chunk = symbols[chunk_start:chunk_start + chunk_size]
+            try:
                 data = kite.ltp(chunk)
-                for key, v in data.items():
-                    ltp_map[key.split(":", 1)[1]] = v.get("last_price")
-        except Exception as exc:
-            logger.warning(f"LTP snapshot failed ({exc}) — price band skipped")
+            except Exception as exc:
+                logger.warning(f"LTP snapshot chunk failed ({exc}) — "
+                               f"{len(chunk)} symbol(s) skipped for the price band")
+                continue                                 # one bad chunk doesn't sink the rest
+            for key, v in data.items():
+                ltp_map[key.split(":", 1)[1]] = v.get("last_price")
+        if symbols and not ltp_map:
+            logger.warning("LTP snapshot: no prices fetched — price band skipped entirely")
 
         universe = filter_universe(instruments, ltp_map, self._u, fno_underlyings=fno)
         self._write(universe)

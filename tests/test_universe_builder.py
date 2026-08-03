@@ -59,6 +59,48 @@ def test_build_derives_fno_from_nfo(tmp_path):
     assert {r["symbol"] for r in universe} == {"RELIANCE"}  # ILLIQUID has no F&O
 
 
+def test_build_chunks_ltp_requests_at_200():
+    # kite.ltp() is a GET with one query param per symbol; >200 in one call risks a
+    # 414 URI-too-large from the server. 450 symbols -> 3 chunks (200/200/50).
+    cfg = {"trading": {"exchange": "NSE"}, "universe": {"fno_only": False}}
+    kite = MagicMock()
+    nse = [_inst(f"SYM{i}", token=i) for i in range(450)]
+    kite.instruments.side_effect = lambda seg: nse if seg == "NSE" else []
+    seen_chunk_sizes = []
+
+    def _ltp(chunk):
+        seen_chunk_sizes.append(len(chunk))
+        return {s: {"last_price": 500.0} for s in chunk}
+    kite.ltp.side_effect = _ltp
+    ub = UniverseBuilder(cfg, cache_dir="ignored")
+    ub._write = lambda universe: None          # skip disk I/O for this assertion
+    ub.build(kite)
+    assert seen_chunk_sizes == [200, 200, 50]
+    assert all(n <= 200 for n in seen_chunk_sizes)
+
+
+def test_build_one_bad_ltp_chunk_does_not_lose_the_rest(tmp_path):
+    # a 414 (or any transient failure) on one chunk must not blank out the price band
+    # for symbols in OTHER chunks - only that chunk's prices are skipped.
+    cfg = {"trading": {"exchange": "NSE"}, "universe": {"fno_only": False,
+                                                         "price_min": 100, "price_max": 5000}}
+    kite = MagicMock()
+    nse = [_inst(f"SYM{i}", token=i) for i in range(250)]   # 2 chunks: 200 + 50
+    kite.instruments.side_effect = lambda seg: nse if seg == "NSE" else []
+    calls = {"n": 0}
+
+    def _ltp(chunk):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise Exception("414 Request-URI Too Large")
+        return {f"NSE:{s.split(':')[1]}": {"last_price": 500.0} for s in chunk}
+    kite.ltp.side_effect = _ltp
+    ub = UniverseBuilder(cfg, cache_dir=str(tmp_path))
+    universe = ub.build(kite)                  # must not raise
+    assert calls["n"] == 2                     # both chunks attempted
+    assert len(universe) == 250                # missing-ltp symbols still pass (unfiltered)
+
+
 def test_explicit_exclusions():
     insts = [_inst("RELIANCE"), _inst("BANNED")]
     out = filter_universe(insts, {}, {"exclude": ["BANNED"]})
