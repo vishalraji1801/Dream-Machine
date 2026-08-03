@@ -683,6 +683,34 @@ def _in_swing_window(cfg: dict) -> bool:
     return parse(s.get("window_start", "15:00")) <= datetime.now().time() <= parse(s.get("window_end", "15:14"))
 
 
+def _format_swing_summary(result: dict, source: str) -> str:
+    """The swing Telegram message — the one-line count PLUS what actually happened (symbol,
+    price, P&L for each entry/exit) and a shadow-book line. Previously this was just counts
+    ('2 entered, 1 exited'), which told you nothing you could act on; the daily EOD summary is
+    intraday-only (its ledger is never written while intraday is suspended), so this message is
+    the ONLY automatic place paper/shadow activity was ever meant to surface."""
+    lines = [f"Swing sleeve ({source}): regime {result['regime']}, "
+             f"{result['entered']} entered, {result['exited']} exited, "
+             f"{result.get('refused', 0)} refused, {result['open']} open."]
+    for e in result.get("entries", []):
+        lines.append(f"  + {e['direction']} {e['qty']}x{e['symbol']} @ {e['entry_price']:.2f} "
+                     f"[{e['strategy']}]")
+    for x in result.get("exits", []):
+        sign = "+" if x["pnl"] >= 0 else ""
+        lines.append(f"  - {x['direction']} {x['qty']}x{x['symbol']} @ {x['exit_price']:.2f} "
+                     f"[{x['strategy']}] {sign}{x['pnl']:.2f} ({x['reason']})")
+    shadow_open = result.get("shadow_open", 0)
+    shadow_exits = result.get("shadow_exits", [])
+    if shadow_open or shadow_exits:
+        today_net = sum(s["pnl"] for s in shadow_exits)
+        line = f"Shadow book: {shadow_open} open"
+        if shadow_exits:
+            sign = "+" if today_net >= 0 else ""
+            line += f", {len(shadow_exits)} closed today ({sign}{today_net:.2f})"
+        lines.append(line)
+    return "\n".join(lines)
+
+
 _SWING_MARKER = os.path.join("logs", "swing_last_run.json")
 
 
@@ -1032,6 +1060,26 @@ def run() -> int:
             lines.append(f"  {p.direction} {p.quantity}x{p.symbol} @ {p.entry_price:.2f} | "
                          f"LTP {ltp:.2f} | SL {p.stop_loss:.2f} | Tgt {p.target:.2f} | {u:+.0f}")
         pos_block = "\n".join(lines) or "  None"
+
+        # Swing/shadow block — the intraday-only fields above are always empty while the
+        # intraday sleeve is suspended, so without this /status showed "0 positions, Rs.0"
+        # even with live swing paper positions and a populated shadow book.
+        swing_block = ""
+        swing = ctx.get("swing")
+        if swing is not None:
+            spos = list(swing.positions.values())
+            squotes = (_get_quotes(ctx, [p.symbol for p in spos]) or {}) if spos else {}
+            slines = []
+            for p in spos:
+                sltp = squotes.get(p.symbol, {}).get("ltp", p.entry_price)
+                su = (((sltp - p.entry_price) if p.direction == "BUY"
+                      else (p.entry_price - sltp)) * p.quantity)
+                slines.append(f"  {p.direction} {p.quantity}x{p.symbol} @ {p.entry_price:.2f} | "
+                              f"LTP {sltp:.2f} | stop {p.stop:.2f} | {su:+.0f}")
+            swing_pos_block = "\n".join(slines) or "  None"
+            swing_block = (f"\nSwing positions ({len(spos)}):\n{swing_pos_block}\n"
+                          f"Shadow book: {len(swing.shadow)} open")
+
         return (
             f"Bot Status{' — PAUSED' if pause_event.is_set() else ''}\n"
             f"Market: {ctx['calendar'].status_text()}\n"
@@ -1039,6 +1087,7 @@ def run() -> int:
             f"Unrealized P&L: Rs.{unrealized:+.2f}\n"
             f"Realized P&L today: Rs.{risk._daily_pnl:+.2f}\n"
             f"Trades today: {risk._trades_today}"
+            f"{swing_block}"
         )
 
     controller = TelegramController(
@@ -1107,10 +1156,7 @@ def run() -> int:
                 try:
                     result = swing.run_daily()
                     _record_swing_run(result)          # heartbeat: 'the run happened today'
-                    ctx["alert"].send_raw(
-                        f"Swing sleeve ({ctx['source']}): regime {result['regime']}, "
-                        f"{result['entered']} entered, {result['exited']} exited, "
-                        f"{result.get('refused', 0)} refused, {result['open']} open.")
+                    ctx["alert"].send_raw(_format_swing_summary(result, ctx["source"]))
                 except Exception as exc:
                     logger.error(f"Swing run failed: {exc}", exc_info=True)
                     ctx["alert"].send_raw(

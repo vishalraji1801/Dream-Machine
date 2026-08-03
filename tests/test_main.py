@@ -1392,3 +1392,37 @@ def test_heartbeat_reports_positions_and_streamer():
     text = ctx["alert"].send_raw.call_args.args[0]
     assert "1 open positions" in text
     assert "streamer connected" in text
+
+
+# ── swing Telegram summary (trade detail + shadow book, not just counts) ───────
+
+def test_format_swing_summary_bare_counts_when_nothing_happened():
+    result = {"regime": "RANGE", "entered": 0, "exited": 0, "refused": 3, "open": 1,
+             "entries": [], "exits": [], "shadow_open": 0, "shadow_exits": []}
+    text = main._format_swing_summary(result, "paper")
+    assert "regime RANGE" in text and "3 refused" in text and "1 open" in text
+    assert "Shadow book" not in text          # nothing to report -> line omitted
+
+
+def test_format_swing_summary_lists_entries_exits_and_shadow():
+    result = {
+        "regime": "STRONG_TREND_UP", "entered": 1, "exited": 1, "refused": 0, "open": 2,
+        "entries": [{"symbol": "COALINDIA", "strategy": "maker_4679245d", "direction": "BUY",
+                    "qty": 11, "entry_price": 428.0}],
+        "exits": [{"symbol": "RELIANCE", "strategy": "donchian_trend_tsl", "direction": "BUY",
+                  "qty": 3, "exit_price": 1272.2, "pnl": -94.8, "reason": "stop"}],
+        "shadow_open": 146,
+        "shadow_exits": [{"symbol": "TCS", "strategy": "maker_5b132840", "pnl": 55.0,
+                          "reason": "target"}],
+    }
+    text = main._format_swing_summary(result, "paper")
+    assert "+ BUY 11xCOALINDIA @ 428.00 [maker_4679245d]" in text
+    assert "- BUY 3xRELIANCE @ 1272.20 [donchian_trend_tsl] -94.80 (stop)" in text
+    assert "Shadow book: 146 open, 1 closed today (+55.00)" in text
+
+
+def test_format_swing_summary_shadow_open_only_no_closes():
+    result = {"regime": "RANGE", "entered": 0, "exited": 0, "refused": 0, "open": 1,
+             "entries": [], "exits": [], "shadow_open": 79, "shadow_exits": []}
+    text = main._format_swing_summary(result, "live")
+    assert "Shadow book: 79 open" in text and "closed today" not in text

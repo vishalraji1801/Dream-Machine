@@ -127,13 +127,17 @@ class SwingEngine:
     def run_daily(self, now: Optional[datetime] = None) -> dict:
         now = now or datetime.now()
         self._refused = 0                  # signals that fired but couldn't be funded/slotted
+        # Per-cycle activity log — Telegram/status surfaces need WHAT happened (symbol, price,
+        # P&L), not just counts. Reset each run; _open/_close/_manage_shadow append to it.
+        self._activity = {"entries": [], "exits": [], "shadow_exits": []}
         if self.mode == "live":            # Kite is the truth — sync BEFORE managing/entering
             self.reconcile_with_broker(now)
         idx = self.fetch_daily(self.index_symbol, self.lookback_days)
         if idx is None or len(idx) < 60:
             logger.warning("swing: insufficient index daily data — skipping run")
             return {"regime": "UNKNOWN", "entered": 0, "exited": 0, "refused": 0,
-                    "open": len(self.positions)}
+                    "open": len(self.positions), "entries": [], "exits": [],
+                    "shadow_open": len(self.shadow), "shadow_exits": []}
 
         state = compute_market_state(idx, self.ms_cfg)
         self._prev_regime = classify(state, self._prev_regime, self.regime_cfg)
@@ -164,7 +168,9 @@ class SwingEngine:
                        f"router=pass-through({len(active)} edges) exposure_x{mult:g} "
                        f"exited={exited} entered={entered} open={len(self.positions)}")
         return {"regime": regime.regime.value, "entered": entered, "exited": exited,
-                "refused": self._refused, "open": len(self.positions)}
+                "refused": self._refused, "open": len(self.positions),
+                "entries": self._activity["entries"], "exits": self._activity["exits"],
+                "shadow_open": len(self.shadow), "shadow_exits": self._activity["shadow_exits"]}
 
     # ── broker reconciliation (LIVE: Kite is the source of truth) ─────────────
 
@@ -406,6 +412,10 @@ class SwingEngine:
         if self.db is not None:
             self.db.record_signal(source=self.mode, symbol=sym, direction=sig.direction,
                                   taken=True, strategy=strat)
+        if hasattr(self, "_activity"):
+            self._activity["entries"].append({"symbol": sym, "strategy": strat,
+                                               "direction": sig.direction, "qty": qty,
+                                               "entry_price": entry_price})
         return True
 
     def _net_pnl(self, pos: SwingPosition, exit_price: float) -> tuple[float, float, float]:
@@ -430,6 +440,11 @@ class SwingEngine:
                                  entry_price=pos.entry_price, exit_price=round(exit_price, 2),
                                  entry_time=pos.entry_date, exit_time=now, pnl=round(pnl, 2),
                                  exit_reason=f"swing_{reason}")
+        if hasattr(self, "_activity"):
+            self._activity["exits"].append({"symbol": pos.symbol, "strategy": pos.strategy,
+                                            "direction": pos.direction, "qty": pos.quantity,
+                                            "exit_price": round(exit_price, 2),
+                                            "pnl": round(pnl, 2), "reason": reason})
         del self.positions[pos.symbol]
 
     # ── shadow book (unconstrained parallel ledger — the "what if" P&L) ────────
@@ -499,6 +514,10 @@ class SwingEngine:
                                          exit_price=round(exit_price, 2), entry_time=pos.entry_date,
                                          exit_time=now, pnl=round(pnl, 2),
                                          exit_reason=f"shadow_{reason}")
+                if hasattr(self, "_activity"):
+                    self._activity["shadow_exits"].append({
+                        "symbol": pos.symbol, "strategy": pos.strategy, "pnl": round(pnl, 2),
+                        "reason": reason})
                 del self.shadow[key]
 
     # ── state persistence (positions survive restarts / overnight) ────────────
