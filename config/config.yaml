@@ -290,6 +290,12 @@ swing:
   # Only ever REDUCES risk vs the validated baseline. Set every regime to 1.0 to disable.
   regime_exposure:
     HIGH_VOL_CHOP: 0.5    # trim new entries in the one genuinely hostile regime
+  # Same-symbol conflict priority: once a strategy has this many CLOSED shadow trades (from
+  # the unconstrained shadow book, which tracks every trigger for every strategy), its LIVE
+  # realized shadow profit factor overrides the router's static backtest-calibrated weight
+  # when multiple strategies fire on the same symbol the same cycle. Below this many closed
+  # trades, the router weight governs (not enough live evidence to trust yet).
+  shadow_priority_min_trades: 5
   # Kite Connect exposes only STATIC GTT triggers (no native trailing SL), so the bot
   # ratchets the stop itself and MODIFIES the GTT each day it moves. Backtest simulates
   # the ATR trail directly.

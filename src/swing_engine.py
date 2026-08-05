@@ -102,6 +102,10 @@ class SwingEngine:
         # (never places an order); recorded to the ledger as source='shadow'.
         self.shadow_enabled = s.get("shadow_enabled", True)
         self.shadow: dict = {}
+        # Same-symbol conflict priority: once a strategy has this many CLOSED shadow trades,
+        # its realized shadow PF (live, ongoing, out-of-sample) overrides the router's static
+        # backtest-calibrated weight — see _shadow_priority_weights.
+        self.shadow_priority_min_trades = s.get("shadow_priority_min_trades", 5)
         # Regime exposure throttle: {regime: multiplier} on NEW entries per cycle. The regime
         # signal's only real lever over regime-agnostic edges (it can't pick among them). A
         # missing regime defaults to 1.0 (full appetite); it can only ever reduce entries.
@@ -300,6 +304,29 @@ class SwingEngine:
 
     # ── entries ───────────────────────────────────────────────────────────────
 
+    def _shadow_priority_weights(self, min_trades: int = None) -> dict:
+        """Per-strategy priority derived from REALIZED shadow P&L (closed shadow trades,
+        every symbol, from the unconstrained shadow book — see _scan_shadow) — LIVE, ongoing
+        out-of-sample evidence of which strategy is actually earning more positive returns
+        right now, not just what it measured at certification. Returns {strategy: priority}
+        (priority = profit factor, unbounded) for strategies with >= min_trades closed shadow
+        trades; a strategy without enough closed history is simply absent from the dict, and
+        callers fall back to the router's backtest-calibrated weight for it."""
+        if self.db is None:
+            return {}
+        min_trades = self.shadow_priority_min_trades if min_trades is None else min_trades
+        by_strat: dict = {}
+        for t in self.db.trades(source="shadow"):
+            by_strat.setdefault(t["strategy"], []).append(t.get("pnl") or 0.0)
+        out = {}
+        for strat, pnls in by_strat.items():
+            if len(pnls) < min_trades:
+                continue
+            gp = sum(p for p in pnls if p > 0)
+            gl = abs(sum(p for p in pnls if p <= 0))
+            out[strat] = (gp / gl) if gl > 0 else (float("inf") if gp > 0 else 0.0)
+        return out
+
     def _scan_entries(self, regime, active: list, now: datetime) -> int:
         # Collect EVERY firing signal (one per symbol), then fill the scarce slot(s) with the
         # HIGHEST-CONVICTION ones first — an always-on strategy (e.g. pdh+limit that fires on
@@ -307,7 +334,13 @@ class SwingEngine:
         # fund is still NOTED (refused) as missed-opportunity data.
         if not active:
             return 0
-        fires = []                       # (sym, name, sig, weight, atr)
+        # Priority for conflict resolution: LIVE realized shadow PF once a strategy has enough
+        # closed shadow trades to trust; the router's static backtest weight until then. Since
+        # the unconstrained shadow book now tracks every trigger for every strategy, this
+        # priority keeps improving with live evidence instead of staying pinned to whatever
+        # PF certification measured once.
+        shadow_pri = self._shadow_priority_weights()
+        fires = []                       # (sym, name, sig, priority, atr)
         for sym in self.cfg["trading"]["watchlist"]:
             if sym in self.positions:
                 continue
@@ -315,23 +348,23 @@ class SwingEngine:
             if df is None or len(df) < 210:
                 continue
             # Collect EVERY strategy that fires on THIS symbol this cycle — a contested symbol
-            # is resolved by ROUTER WEIGHT (proportional to regime_fit.pf, i.e. the strategy's
-            # measured historical edge in this regime — "more positive returns wins"), not by
-            # which strategy happened to compile first. Losers are refused+logged, not silently
-            # dropped, so you can see what else fired there.
-            sym_fires = []               # (name, sig, weight)
+            # is resolved by PRIORITY (live shadow PF, else router weight — "more positive
+            # returns wins"), not by which strategy happened to compile first. Losers are
+            # refused+logged, not silently dropped, so you can see what else fired there.
+            sym_fires = []               # (name, sig, priority)
             for a in active:
                 scfg = {**self.cfg["strategy"], **a.param_set.params, "name": a.name}
                 sig = generate_signal(sym, df, scfg)
                 if sig.direction == "HOLD" or sig.entry_price <= 0 \
                         or abs(sig.entry_price - sig.stop_loss) <= 0:
                     continue
-                sym_fires.append((a.name, sig, a.weight))
+                priority = shadow_pri.get(a.name, a.weight)
+                sym_fires.append((a.name, sig, priority))
             if not sym_fires:
                 continue
-            sym_fires.sort(key=lambda f: -f[2])              # highest weight (edge) wins
-            winner_name, winner_sig, winner_weight = sym_fires[0]
-            fires.append((sym, winner_name, winner_sig, winner_weight, _atr(df, 14)))
+            sym_fires.sort(key=lambda f: -f[2])              # highest priority (edge) wins
+            winner_name, winner_sig, winner_priority = sym_fires[0]
+            fires.append((sym, winner_name, winner_sig, winner_priority, _atr(df, 14)))
             if len(sym_fires) > 1:
                 deployed = sum(p.entry_price * p.quantity for p in self.positions.values())
                 free = self.capital - deployed
@@ -340,8 +373,9 @@ class SwingEngine:
         if not fires:
             return 0
         # CONVICTION rank: a strategy that fired on FEWER names is more selective (higher
-        # conviction) — prefer it, then higher router weight, so the slot diversifies across
-        # setups over time instead of always going to the flooder's first watchlist name.
+        # conviction) — prefer it, then higher priority (live shadow PF, else router weight),
+        # so the slot diversifies across setups over time instead of always going to the
+        # flooder's first watchlist name.
         from collections import Counter
         freq = Counter(name for _, name, _, _, _ in fires)
         fires.sort(key=lambda f: (freq[f[1]], -f[3]))
@@ -465,46 +499,34 @@ class SwingEngine:
     # ── shadow book (unconstrained parallel ledger — the "what if" P&L) ────────
 
     def _scan_shadow(self, regime, active: list, now: datetime) -> None:
-        """Realistic-portfolio counterfactual: the SAME account (capital, per-name cap,
-        one position per symbol, NET costs) but WITHOUT the max_positions slot limit the
-        real book obeys. So the shadow equity curve is actually achievable at real capital
-        — and, by holding every symbol the slot cap turned away, it measures exactly what
-        that position-count cap costs (or saves). Keyed sym|strat; a contested symbol is
-        resolved by ROUTER WEIGHT — same rule as the real book (_scan_entries) — so the two
-        books never disagree about which strategy claims a name. Not an unbounded per-signal
-        ledger — that implied capital that doesn't exist."""
-        held = {k.split("|")[0] for k in self.shadow}          # symbols already in the shadow book
-        deployed = sum(p.entry_price * p.quantity for p in self.shadow.values())
+        """UNCONSTRAINED signal-level forward test: every strategy that fires on every symbol
+        gets its own shadow position — one per (symbol, strategy), sized at a fixed notional
+        (max_position_value). NO one-position-per-symbol limit, NO total-capital cap. This is
+        deliberately not a claimed-achievable equity curve (the implied notional exceeds real
+        capital) — it is a complete record of every trigger's outcome, per strategy, used as
+        live out-of-sample evidence for same-symbol conflict resolution (see
+        _shadow_priority_weights, used by _scan_entries)."""
         for sym in self.cfg["trading"]["watchlist"]:
-            if sym in held:
-                continue                        # one shadow position per symbol (realistic)
-            if deployed >= self.capital:
-                break                           # account fully deployed — cannot fund more
             df = self.fetch_daily(sym, self.lookback_days)
             if df is None or len(df) < 210:
                 continue
-            sym_fires = []                      # (name, sig, weight) — every strategy that fires
             for a in active:
+                key = f"{sym}|{a.name}"
+                if key in self.shadow:
+                    continue                    # already tracking this (symbol, strategy)
                 scfg = {**self.cfg["strategy"], **a.param_set.params, "name": a.name}
                 sig = generate_signal(sym, df, scfg)
                 if (sig.direction == "HOLD" or sig.entry_price <= 0
                         or abs(sig.entry_price - sig.stop_loss) <= 0):
                     continue
-                sym_fires.append((a.name, sig, a.weight))
-            if not sym_fires:
-                continue
-            sym_fires.sort(key=lambda f: -f[2])              # highest weight (edge) wins
-            name, sig, _w = sym_fires[0]
-            free = self.capital - deployed
-            qty = int(min(free, self.max_position_value) / sig.entry_price)
-            if qty < 1:
-                continue                        # can't fund one share here -> skip the symbol
-            self.shadow[f"{sym}|{name}"] = SwingPosition(
-                symbol=sym, strategy=name, direction=sig.direction,
-                entry_price=sig.entry_price, quantity=qty, stop=sig.stop_loss,
-                target=sig.target, entry_date=now.date().isoformat(),
-                regime=regime.regime.value, peak=sig.entry_price, atr=_atr(df, 14) or 0.0)
-            deployed += sig.entry_price * qty
+                qty = int(self.max_position_value / sig.entry_price)   # fixed notional, uncapped
+                if qty < 1:
+                    continue
+                self.shadow[key] = SwingPosition(
+                    symbol=sym, strategy=a.name, direction=sig.direction,
+                    entry_price=sig.entry_price, quantity=qty, stop=sig.stop_loss,
+                    target=sig.target, entry_date=now.date().isoformat(),
+                    regime=regime.regime.value, peak=sig.entry_price, atr=_atr(df, 14) or 0.0)
 
     def _manage_shadow(self, now: datetime) -> None:
         """Trail/exit the shadow book on the daily bar and book realized shadow P&L to the

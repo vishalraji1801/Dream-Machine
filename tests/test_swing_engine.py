@@ -33,11 +33,14 @@ def _cfg():
 
 class FakeDB:
     def __init__(self):
-        self.trades, self.signals, self.routing = [], [], []
+        self.trade_rows, self.signals, self.routing = [], [], []
 
-    def record_trade(self, **k): self.trades.append(k)
+    def record_trade(self, **k): self.trade_rows.append(k)
     def record_signal(self, **k): self.signals.append(k)
     def record_routing(self, **k): self.routing.append(k)
+
+    def trades(self, source=None):        # mirrors src.trade_db.TradeDB.trades()
+        return [t for t in self.trade_rows if source is None or t.get("source") == source]
 
 
 def _fetch(data):
@@ -95,6 +98,90 @@ def test_contested_symbol_resolved_by_router_weight(tmp_path):
     assert eng2.positions["AAA"].strategy == "maker_5b132840"
 
 
+def test_shadow_book_is_unconstrained_tracks_every_trigger(tmp_path):
+    # the shadow book takes EVERY firing (symbol, strategy) combo - no one-position-per-symbol
+    # limit (unlike the real book) and no total-capital cap. 2 strategies x 2 symbols -> 4
+    # shadow positions, with total notional deliberately exceeding a tiny account capital.
+    from src.regime import Regime, RegimeState
+    from src.router import ActiveStrategy
+    from src.strategy_meta import ParamSet
+    stock = _daily([100 + i * 0.8 for i in range(260)])
+    cfg = _cfg()
+    cfg["swing"]["capital"] = 10_000             # deliberately tiny
+    cfg["swing"]["max_position_value"] = 8_000   # ONE position alone nearly exhausts it
+    eng = SwingEngine(cfg, "paper", FakeDB(), _fetch({"AAA": stock, "BBB": stock}),
+                      state_path=str(tmp_path / "sw.json"))
+    strategies = [
+        ActiveStrategy(name="donchian_trend_tsl", param_set=ParamSet(params={}, validated=True),
+                       weight=0.5, fit_pf=1.5, regime="STRONG_TREND_UP"),
+        ActiveStrategy(name="maker_5b132840", param_set=ParamSet(params={}, validated=True),
+                       weight=0.5, fit_pf=1.5, regime="STRONG_TREND_UP"),
+    ]
+    regime = RegimeState(regime=Regime.STRONG_TREND_UP, confidence=1.0, since_bars=10, inputs={})
+
+    eng._scan_shadow(regime, strategies, NOW)
+
+    assert len(eng.shadow) == 4                  # both strategies, both symbols - none dropped
+    assert {"AAA|donchian_trend_tsl", "AAA|maker_5b132840",
+           "BBB|donchian_trend_tsl", "BBB|maker_5b132840"} == set(eng.shadow)
+    total_notional = sum(p.entry_price * p.quantity for p in eng.shadow.values())
+    assert total_notional > cfg["swing"]["capital"]      # confirms: no capital cap
+
+
+def test_shadow_priority_overrides_router_weight_once_enough_evidence(tmp_path):
+    # LIVE realized shadow PF (from the unconstrained shadow book) should override the
+    # router's static backtest weight once a strategy has enough closed shadow trades.
+    from src.regime import Regime, RegimeState
+    from src.router import ActiveStrategy
+    from src.strategy_meta import ParamSet
+    stock = _daily([100 + i * 0.8 for i in range(260)])
+    db = FakeDB()
+    for pnl in [100, 100, 100, 100, 100]:          # donchian: 5 wins, no losses -> shadow PF=inf
+        db.record_trade(source="shadow", strategy="donchian_trend_tsl", pnl=pnl)
+    for pnl in [-50, -50, -50, -50, -50]:          # maker_5b132840: 5 losses -> shadow PF=0
+        db.record_trade(source="shadow", strategy="maker_5b132840", pnl=pnl)
+    eng = SwingEngine(_cfg(), "paper", db, _fetch({"AAA": stock}), state_path=str(tmp_path / "sw.json"))
+    winning_live_low_router_weight = ActiveStrategy(
+        name="donchian_trend_tsl", param_set=ParamSet(params={}, validated=True),
+        weight=0.1, fit_pf=1.2, regime="STRONG_TREND_UP")
+    losing_live_high_router_weight = ActiveStrategy(
+        name="maker_5b132840", param_set=ParamSet(params={}, validated=True),
+        weight=0.9, fit_pf=2.0, regime="STRONG_TREND_UP")
+    regime = RegimeState(regime=Regime.STRONG_TREND_UP, confidence=1.0, since_bars=10, inputs={})
+
+    entered = eng._scan_entries(regime, [losing_live_high_router_weight,
+                                         winning_live_low_router_weight], NOW)
+
+    assert entered == 1
+    assert eng.positions["AAA"].strategy == "donchian_trend_tsl"   # live evidence wins, not router weight
+
+
+def test_shadow_priority_falls_back_to_router_weight_below_min_trades(tmp_path):
+    # too few closed shadow trades to trust (< shadow_priority_min_trades) -> priority falls
+    # back to the router's static weight, exactly as if no shadow evidence existed at all.
+    from src.regime import Regime, RegimeState
+    from src.router import ActiveStrategy
+    from src.strategy_meta import ParamSet
+    stock = _daily([100 + i * 0.8 for i in range(260)])
+    db = FakeDB()
+    for pnl in [100, 100]:                         # only 2 closed trades: below default min (5)
+        db.record_trade(source="shadow", strategy="donchian_trend_tsl", pnl=pnl)
+    eng = SwingEngine(_cfg(), "paper", db, _fetch({"AAA": stock}), state_path=str(tmp_path / "sw.json"))
+    low_router_weight_thin_evidence = ActiveStrategy(
+        name="donchian_trend_tsl", param_set=ParamSet(params={}, validated=True),
+        weight=0.1, fit_pf=1.2, regime="STRONG_TREND_UP")
+    high_router_weight_no_evidence = ActiveStrategy(
+        name="maker_5b132840", param_set=ParamSet(params={}, validated=True),
+        weight=0.9, fit_pf=2.0, regime="STRONG_TREND_UP")
+    regime = RegimeState(regime=Regime.STRONG_TREND_UP, confidence=1.0, since_bars=10, inputs={})
+
+    entered = eng._scan_entries(regime, [low_router_weight_thin_evidence,
+                                         high_router_weight_no_evidence], NOW)
+
+    assert entered == 1
+    assert eng.positions["AAA"].strategy == "maker_5b132840"       # router weight still governs
+
+
 def test_state_persists_across_restart(tmp_path):
     up = _daily([100 + i for i in range(260)])
     stock = _daily([100 + i * 0.8 for i in range(260)])
@@ -121,7 +208,7 @@ def test_exit_on_trailing_stop(tmp_path):
     # The trailing stop exited the original donchian long. A dip-buy / other strategy
     # may re-enter AAA the SAME cycle (separate, valid decision) now that the sleeve
     # holds 6 strategies — so assert the EXIT fired, not permanent absence.
-    assert any(t["exit_reason"].startswith("swing_stop") for t in db.trades)
+    assert any(t["exit_reason"].startswith("swing_stop") for t in db.trade_rows)
     held = eng.positions.get("AAA")
     assert held is None or held.entry_date != NOW.date().isoformat()   # original long gone
 
@@ -158,7 +245,7 @@ def test_reconcile_closes_positions_broker_no_longer_holds(tmp_path):
     assert r["reconciled"] and r["closed"] == 1
     assert "AAA" in eng.positions and "BBB" not in eng.positions          # BBB reconciled closed
     assert any(t["symbol"] == "BBB" and t["exit_reason"] == "swing_reconciled_broker_exit"
-               for t in db.trades)
+               for t in db.trade_rows)
 
 
 def test_reconcile_syncs_partial_and_ignores_untracked(tmp_path):
@@ -271,7 +358,7 @@ def test_shadow_book_tracks_signals_and_books_pnl(tmp_path):
     crash = [100 + i * 0.8 for i in range(259)] + [50]
     data["AAA"] = _daily(crash, lows=[c - 2 for c in crash[:-1]] + [40])
     eng.run_daily(now=datetime(2026, 7, 15, 15, 5))
-    assert any(t.get("source") == "shadow" for t in db.trades)
+    assert db.trades(source="shadow")
 
 
 def test_edge_covers_cost_gate(tmp_path):
