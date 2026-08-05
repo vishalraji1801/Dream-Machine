@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 import yaml
 
-from src.swing_engine import SwingEngine, SwingPosition
+from src.swing_engine import SWING_STRATEGIES, SwingEngine, SwingPosition
 
 
 def _pos(sym, qty=3, entry=100.0, stop=90.0):
@@ -57,9 +57,42 @@ def test_enters_donchian_long_in_uptrend(tmp_path):
     assert r["regime"] == "STRONG_TREND_UP"
     assert "AAA" in eng.positions
     pos = eng.positions["AAA"]
-    assert pos.strategy == "donchian_trend_tsl" and pos.direction == "BUY"
+    # WHICH of the (many) strategies that fire on this trending fixture wins AAA is now decided
+    # by router weight (measured historical edge), not asserted here — see
+    # test_contested_symbol_resolved_by_router_weight for that mechanism directly.
+    assert pos.strategy in SWING_STRATEGIES and pos.direction == "BUY"
     assert pos.stop < pos.entry_price
     assert db.signals and db.routing                      # persisted
+
+
+def test_contested_symbol_resolved_by_router_weight(tmp_path):
+    # two strategies both fire BUY on the SAME symbol this cycle; the HIGHER-weight one
+    # (router weight = allocation proportional to regime_fit.pf, i.e. "more positive
+    # historical returns in this regime") wins the symbol; the loser is refused+logged
+    # (reason=lower_weight_signal), not silently dropped.
+    from src.regime import Regime, RegimeState
+    from src.router import ActiveStrategy
+    from src.strategy_meta import ParamSet
+    stock = _daily([100 + i * 0.8 for i in range(260)])    # trending -> both strategies fire
+    db = FakeDB()
+    eng = SwingEngine(_cfg(), "paper", db, _fetch({"AAA": stock}), state_path=str(tmp_path / "sw.json"))
+    low = ActiveStrategy(name="donchian_trend_tsl", param_set=ParamSet(params={}, validated=True),
+                         weight=0.1, fit_pf=1.2, regime="STRONG_TREND_UP")
+    high = ActiveStrategy(name="maker_5b132840", param_set=ParamSet(params={}, validated=True),
+                          weight=0.9, fit_pf=2.0, regime="STRONG_TREND_UP")
+    regime = RegimeState(regime=Regime.STRONG_TREND_UP, confidence=1.0, since_bars=10, inputs={})
+
+    entered = eng._scan_entries(regime, [low, high], NOW)
+
+    assert entered == 1
+    assert eng.positions["AAA"].strategy == "maker_5b132840"      # higher weight wins the symbol
+    assert any(s["strategy"] == "donchian_trend_tsl" and s["reason"] == "lower_weight_signal"
+              and s["taken"] is False for s in db.signals)         # loser refused, not dropped
+    # order in the ActiveStrategy list must not matter -> swap it, same winner
+    eng2 = SwingEngine(_cfg(), "paper", FakeDB(), _fetch({"AAA": stock}),
+                       state_path=str(tmp_path / "sw2.json"))
+    eng2._scan_entries(regime, [high, low], NOW)
+    assert eng2.positions["AAA"].strategy == "maker_5b132840"
 
 
 def test_state_persists_across_restart(tmp_path):
