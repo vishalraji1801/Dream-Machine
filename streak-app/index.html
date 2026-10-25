@@ -680,7 +680,7 @@ function subAct(h, sub, a) {
   else if (a === 'tpause') commitTimer(sub);
   else if (a === 'treset') { delete timers[sub.id]; setProgress(sub, d, 0); }
   else if (a === 'succeed') setSubResult(h, sub, d, 'ok');
-  else if (a === 'failed') setSubResult(h, sub, d, 'fail');
+  else if (a === 'failed' || a === 'no') setSubResult(h, sub, d, 'fail');
   else if (a === 'opt') sub.optional = !sub.optional;
   if (!wasDone && sub.dates.includes(d)) toast(`✓ ${sub.name} done${sub.optional ? ' (optional)' : ''}`, 2500);
 }
@@ -813,7 +813,8 @@ function subCardHtml(x, date) {
   const kind = cardKind(x), done = x.dates.includes(date), bad = !!x.fails[date], t = targetOf(x), id = x.id;
   let body;
   if (done && (kind === 'counter' || kind === 'timer')) body = `<button class="sc-btn done" data-act="s:yes" data-sid="${id}">✓ Done (tap to undo)</button>`;
-  else if (kind === 'yesno') body = `<button class="sc-btn ${done ? 'done' : ''}" data-act="s:yes" data-sid="${id}">${done ? '✓ Done (tap to undo)' : 'Mark done'}</button>`;
+  else if (kind === 'yesno') body = `<button class="sc-btn ${done ? 'done' : ''}" data-act="s:yes" data-sid="${id}">${done ? '✓ Yes (tap to undo)' : '✓ Yes'}</button>
+      <button class="sc-btn bad ${bad ? 'on' : ''}" data-act="s:no" data-sid="${id}">${bad ? '✗ No (tap to undo)' : '✗ No'}</button>`;
   else if (kind === 'avoid') body = `<button class="sc-btn ${done ? 'done' : ''}" data-act="s:succeed" data-sid="${id}">${done ? '✓ Succeeded (tap to undo)' : '✓ Succeeded today'}</button>
       <button class="sc-btn bad ${bad ? 'on' : ''}" data-act="s:failed" data-sid="${id}">${bad ? '✗ Failed (tap to undo)' : '✗ Failed today'}</button>`;
   else if (kind === 'counter') {
@@ -927,7 +928,7 @@ function renderHabits() {
       ${h.type === 'avoid' ? '' : subsHtml(h, todayStr, subsDone)}
       ${done || h.type === 'avoid' ? '' : trackerHtml(h)}
       <div class="actions">
-        ${h.type === 'avoid' ? avoidBtns(h, todayStr) : `<button class="done-btn ${done ? 'done' : ''}" data-act="check" ${blocked ? 'disabled' : ''}>${done ? (h.mini[todayStr] ? '✓ Done (tiny version). Tap to undo' : '✓ Done today (tap to undo)') : blocked ? `Finish required sub-habits (${subsDone}/${h.subs.filter(x => !x.optional).length})` : sched ? 'Mark done today' : 'Mark done anyway (rest day)'}</button>`}
+        ${h.type === 'avoid' ? avoidBtns(h, todayStr) : cardKind(h) === 'yesno' ? yesNoBtns(h, todayStr, blocked, subsDone, sched) : `<button class="done-btn ${done ? 'done' : ''}" data-act="check" ${blocked ? 'disabled' : ''}>${done ? (h.mini[todayStr] ? '✓ Done (tiny version). Tap to undo' : '✓ Done today (tap to undo)') : blocked ? `Finish required sub-habits (${subsDone}/${h.subs.filter(x => !x.optional).length})` : sched ? 'Mark done today' : 'Mark done anyway (rest day)'}</button>`}
         ${tiny}
         <button data-act="cal">${open ? 'Hide calendar' : 'Calendar'}</button>
         <button data-act="plan">${planOpen.has(h.id) ? 'Hide plan' : 'Plan'}</button>
@@ -965,7 +966,7 @@ function handle(e) {
   else if (act === 'tiny') {
     const d = fmt(today());
     markDone(h, d, true);
-    if (h.dates.includes(d)) { h.mini[d] = 1; commitTimer(h); celebrate(h, true); }
+    if (h.dates.includes(d)) { delete h.fails[d]; h.mini[d] = 1; commitTimer(h); celebrate(h, true); }
   }
   else if (act === 'dayset') {
     const i = Number(el.dataset.i), has = h.days.includes(i);
@@ -980,9 +981,11 @@ function handle(e) {
   else if (act === 'auto') h.auto.push({ d: fmt(today()), v: Number(el.dataset.v) });
   else if (act === 'succeed') setResult(h, fmt(today()), 'ok');
   else if (act === 'failed') setResult(h, fmt(today()), 'fail');
+  else if (act === 'yes') { commitTimer(h); setResult(h, fmt(today()), 'ok'); }
+  else if (act === 'no') setResult(h, fmt(today()), 'fail');
   else if (act === 'day') {
     const d = el.dataset.d;
-    if (h.type === 'avoid') setResult(h, d, h.dates.includes(d) || h.fails[d] ? 'fail' : 'ok');   // cycles: nothing, success, failed, nothing
+    if (h.type === 'avoid' || cardKind(h) === 'yesno') setResult(h, d, h.dates.includes(d) || h.fails[d] ? 'fail' : 'ok');   // cycles: nothing, success, failed, nothing
     else {
       const was = h.dates.includes(d);
       toggleDate(h, d);
@@ -1123,8 +1126,8 @@ function renderCal() {
             <span class="nm">${esc(x.name)}${x.optional ? ' <span class="note">(optional)</span>' : ''}</span></div>`).join('');
         return `<div class="dayrow"><span class="badge" style="--prio:var(--${h.priority})">${h.priority}</span>
           <span class="nm">${esc(h.name)}${scheduled(h, parse(calSel)) || on ? '' : ' <span class="note">(not scheduled)</span>'}</span>
-          ${h.type === 'avoid' ? `<button data-id="${h.id}" data-res="ok" class="${on ? 'on' : ''}" ${future ? 'disabled' : ''}>${on ? '✓ Success' : 'Success'}</button>
-          <button data-id="${h.id}" data-res="fail" class="${h.fails[calSel] ? 'bad' : ''}" ${future ? 'disabled' : ''}>${h.fails[calSel] ? '✗ Failed' : 'Failed'}</button>` : `<button data-id="${h.id}" class="${on ? 'on' : ''}" ${future || blocked ? 'disabled' : ''}>${on ? '✓ Done' : blocked ? 'Sub-habits pending' : 'Mark done'}</button>`}</div>${subs}`;
+          ${h.type === 'avoid' || cardKind(h) === 'yesno' ? `<button data-id="${h.id}" data-res="ok" class="${on ? 'on' : ''}" ${future || (cardKind(h) === 'yesno' && blocked) ? 'disabled' : ''}>${on ? (cardKind(h) === 'yesno' ? '✓ Yes' : '✓ Success') : (cardKind(h) === 'yesno' ? 'Yes' : 'Success')}</button>
+          <button data-id="${h.id}" data-res="fail" class="${h.fails[calSel] ? 'bad' : ''}" ${future ? 'disabled' : ''}>${h.fails[calSel] ? (cardKind(h) === 'yesno' ? '✗ No' : '✗ Failed') : (cardKind(h) === 'yesno' ? 'No' : 'Failed')}</button>` : `<button data-id="${h.id}" class="${on ? 'on' : ''}" ${future || blocked ? 'disabled' : ''}>${on ? '✓ Done' : blocked ? 'Sub-habits pending' : 'Mark done'}</button>`}</div>${subs}`;
       }).join('') : '<div class="empty-msg">No habits yet.</div>');
 }
 
@@ -1202,8 +1205,14 @@ function setResult(h, date, res) {
   } else {
     if (h.fails[date]) { delete h.fails[date]; return; }
     markDone(h, date, false); delete h.mini[date]; h.fails[date] = 1;
-    if (isToday) toast("That's okay. One slip doesn't undo your progress. You can restart right now.", 5000);
+    if (isToday) toast(h.type === 'avoid' ? "That's okay. One slip doesn't undo your progress. You can restart right now." : 'Noted. You can change your answer any time today.', 5000);
   }
+}
+function yesNoBtns(h, ts, blocked, subsDone, sched) {
+  const yes = h.dates.includes(ts), no = !!h.fails[ts];
+  const need = h.subs.filter(x => !x.optional).length;
+  return `<button class="done-btn ${yes ? 'done' : ''}" data-act="yes" ${blocked ? 'disabled' : ''}>${yes ? (h.mini[ts] ? '✓ Yes (tiny version). Tap to undo' : '✓ Yes (tap to undo)') : blocked ? `Finish required sub-habits (${subsDone}/${need})` : sched ? '✓ Yes' : '✓ Yes (rest day)'}</button>
+        <button class="fail-btn ${no ? 'on' : ''}" data-act="no">${no ? '✗ No (tap to undo)' : '✗ No'}</button>`;
 }
 function avoidBtns(h, ts) {
   const ok = h.dates.includes(ts), bad = !!h.fails[ts];
@@ -1351,7 +1360,7 @@ function renderNotices() {
     if (h.type === 'avoid') {
       if (h.fails[s] && !h.misses[s]) items.push({ h, s, d, i, kind: 'why' });
       else if (i > 0 && scheduled(h, d) && !h.dates.includes(s) && !h.fails[s] && !h.misses[s]) items.push({ h, s, d, i, kind: 'log' });
-    } else if (i > 0 && scheduled(h, d) && !h.dates.includes(s) && !h.misses[s]) items.push({ h, s, d, i, kind: 'why' });
+    } else if (!h.dates.includes(s) && !h.misses[s] && ((i > 0 && scheduled(h, d)) || h.fails[s])) items.push({ h, s, d, i, kind: 'why' });   // missed, or answered No
   }
   if (items.length) {
     html += `<div class="card notice"><b>Quick check-in</b> <span class="note">One tap helps you spot patterns and get a fix.</span>
