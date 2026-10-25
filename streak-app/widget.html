@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Streak timer</title>
+<style>
+  :root { --bg: #ffffff; --text: #1d2433; --muted: #7a8396; --track: #e6e9f2; --chip: #eef0f7; --chip-hover: #e0e4f1; --accent: #ff7a1a; --head: #7a8396; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1d2030; --text: #f2f4fb; --muted: #9aa2b8; --track: #343850; --chip: #2b2f45; --chip-hover: #3a3f5c; --head: #9aa2b8; }
+  }
+  body[data-style=bars] { --bg: #1f2230; --text: #fff; --muted: #aab0c4; --track: #343850; --chip: #2d3144; --chip-hover: #3b4060; --head: #aab0c4; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px system-ui, -apple-system, Segoe UI, sans-serif; user-select: none; overflow: hidden; }
+  .head { height: 30px; display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 12px; font-size: 12px; color: var(--head); -webkit-app-region: drag; }
+  .head .tools { display: flex; -webkit-app-region: no-drag; }
+  .head button { background: none; border: 0; color: var(--head); font-size: 16px; cursor: pointer; padding: 2px 8px; }
+  .head button:hover { color: var(--text); }
+  button { font: inherit; }
+
+  /* style: ring */
+  #list.ring { display: flex; justify-content: center; gap: 8px; padding: 2px 8px 10px; }
+  .rc { width: 104px; text-align: center; }
+  .rc .dial { position: relative; width: 88px; height: 88px; margin: 0 auto; }
+  .rc svg { width: 88px; height: 88px; transform: rotate(-90deg); }
+  .rc circle { fill: none; stroke-width: 8; }
+  .rc .bg { stroke: var(--track); }
+  .rc .fg { stroke: var(--accent); stroke-linecap: round; transition: stroke-dashoffset .3s linear; }
+  .rc.paused .fg { stroke: var(--muted); }
+  .rc .t { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .rc .n { margin: 6px 0 6px; font-weight: 600; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; }
+  .rc .b { display: flex; justify-content: center; gap: 4px; }
+  .rc .b button { background: var(--chip); color: var(--text); border: 0; border-radius: 50%; width: 28px; height: 28px; cursor: pointer; }
+  .rc .b button:hover { background: var(--chip-hover); }
+  .rc .b button.go { background: var(--accent); color: #fff; }
+
+  /* style: bars */
+  #list.bars { display: block; }
+  .br { height: 70px; padding: 6px 12px 8px; border-top: 1px solid var(--chip); }
+  .br .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .br .n { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; cursor: pointer; }
+  .br .b { display: flex; gap: 4px; }
+  .br .b button { background: var(--chip); color: var(--text); border: 0; border-radius: 8px; width: 30px; height: 26px; cursor: pointer; }
+  .br .b button:hover { background: var(--chip-hover); }
+  .br .b button.go { background: var(--accent); color: #fff; }
+  .br .mid { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+  .br .t { font-size: 26px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 92px; }
+  .br.paused .t { color: var(--muted); }
+  .br .track { flex: 1; height: 6px; border-radius: 9px; background: var(--track); overflow: hidden; }
+  .br .track i { display: block; height: 100%; background: var(--accent); border-radius: 9px; transition: width .3s linear; }
+
+  #more { text-align: center; color: var(--muted); font-size: 12px; padding-bottom: 6px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body data-style="ring">
+  <div class="head"><span>🔥 Streak timer</span>
+    <span class="tools"><button id="styleBtn" title="Switch style">◐</button><button id="close" title="Close the widget">×</button></span></div>
+  <div id="list" class="ring"></div>
+  <div id="more" hidden></div>
+<script>
+  const CIRC = 2 * Math.PI * 40;                       // ring circumference (r = 40)
+  const list = document.getElementById('list');
+  let style = 'ring';
+  try { style = localStorage.getItem('widgetStyle') === 'bars' ? 'bars' : 'ring'; } catch {}
+  let last = { items: [] };
+  const nodes = { ring: {}, bars: {} };                 // updated in place so clicks are never lost between refreshes
+
+  const clock = sec => {
+    const s = Math.max(0, Math.ceil(sec)), h = Math.floor(s / 3600), pad = n => String(n).padStart(2, '0');
+    return (h ? h + ':' : '') + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60);
+  };
+  // A running timer ends at a fixed moment, so the widget counts down on its own clock
+  // and never looks frozen, even if the app is busy or its updates arrive late.
+  const left = x => x.running && x.endAt ? Math.max(0, (x.endAt - Date.now()) / 1000) : x.remaining;
+
+  function sync(container, map, items, make, update) {
+    const keep = new Set(items.map(x => x.id));
+    for (const id of Object.keys(map)) if (!keep.has(id)) { map[id].remove(); delete map[id]; }
+    items.forEach((x, i) => {
+      const el = map[x.id] || (map[x.id] = make(x));
+      if (container.children[i] !== el) container.insertBefore(el, container.children[i] || null);
+      update(el, x);
+    });
+  }
+  const html = (cls, inner, id) => { const el = document.createElement('div'); el.className = cls; el.dataset.id = id; el.innerHTML = inner; return el; };
+  const btns = '<button data-a="toggle" class="go"></button><button data-a="done" title="Mark the habit done">✓</button><button data-a="reset" title="Reset">↺</button>';
+  const setToggle = (el, running) => { const b = el.querySelector('[data-a=toggle]'); b.textContent = running ? '⏸' : '▶'; b.title = running ? 'Pause' : 'Resume'; b.dataset.run = running ? '1' : ''; };
+
+  const makeRing = x => html('rc', `<div class="dial"><svg viewBox="0 0 100 100"><circle class="bg" cx="50" cy="50" r="40"/><circle class="fg" cx="50" cy="50" r="40" stroke-dasharray="${CIRC}" stroke-dashoffset="${CIRC}"/></svg><div class="t"></div></div><div class="n"></div><div class="b">${btns}</div>`, x.id);
+  const updRing = (el, x) => {
+    const rem = left(x);
+    el.classList.toggle('paused', !x.running);
+    el.querySelector('.t').textContent = clock(rem);
+    el.querySelector('.n').textContent = x.name; el.querySelector('.n').title = x.name;
+    el.querySelector('.fg').style.strokeDashoffset = CIRC * (1 - (x.total ? Math.min(1, rem / x.total) : 0));   // the ring empties as time runs out
+    setToggle(el, x.running);
+  };
+  const makeBar = x => html('br', `<div class="top"><span class="n"></span><span class="b">${btns}</span></div><div class="mid"><span class="t"></span><div class="track"><i></i></div></div>`, x.id);
+  const updBar = (el, x) => {
+    const rem = left(x);
+    el.classList.toggle('paused', !x.running);
+    el.querySelector('.n').textContent = x.name; el.querySelector('.t').textContent = clock(rem);
+    el.querySelector('.track i').style.width = (x.total ? Math.min(100, (1 - rem / x.total) * 100) : 0) + '%';
+    setToggle(el, x.running);
+  };
+
+  function render(p) {
+    last = p;
+    document.body.dataset.style = style;
+    list.className = style;
+    const cap = style === 'ring' ? 3 : 4, shown = p.items.slice(0, cap);
+    document.getElementById('more').hidden = p.items.length <= cap;
+    document.getElementById('more').textContent = '+' + (p.items.length - cap) + ' more in the app';
+    sync(list, nodes[style], shown, style === 'ring' ? makeRing : makeBar, style === 'ring' ? updRing : updBar);
+  }
+
+  document.body.addEventListener('click', e => {
+    const card = e.target.closest('[data-id]'); if (!card) return;
+    if (e.target.closest('.n')) return window.desktop.focusMain();          // the name brings the app back
+    const b = e.target.closest('[data-a]'); if (!b) return;
+    const a = b.dataset.a;
+    window.desktop.widgetAction({ id: card.dataset.id, action: a === 'toggle' ? (b.dataset.run ? 'pause' : 'resume') : a });
+  });
+  document.getElementById('close').onclick = () => window.desktop.closeWidget();
+  document.getElementById('styleBtn').onclick = () => {
+    style = style === 'ring' ? 'bars' : 'ring';
+    try { localStorage.setItem('widgetStyle', style); } catch {}
+    for (const k of ['ring', 'bars']) { for (const id of Object.keys(nodes[k])) nodes[k][id].remove(); nodes[k] = {}; }
+    window.desktop.setStyle(style); render(last);
+  };
+  window.desktop.setStyle(style);
+  window.desktop.onTimerUpdate(render);
+  setInterval(() => render(last), 250);                // smooth local countdown between updates from the app
+</script>
+</body>
+</html>

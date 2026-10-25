@@ -1,0 +1,29 @@
+{
+  "name": "streak-app",
+  "version": "1.0.0",
+  "description": "Habit streak tracker with a calendar",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder --win portable"
+  },
+  "build": {
+    "appId": "com.streak.app",
+    "productName": "Streak",
+    "files": [
+      "main.js",
+      "index.html",
+      "firebase-config.js",
+      "icons/*.png",
+      "preload.js",
+      "widget.html"
+    ],
+    "win": {
+      "target": "portable"
+    }
+  },
+  "devDependencies": {
+    "electron": "^44.5.1",
+    "electron-builder": "^26.15.3"
+  }
+}

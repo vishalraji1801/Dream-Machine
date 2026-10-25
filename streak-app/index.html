@@ -1,0 +1,1782 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streak</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#ff7a1a">
+<link rel="icon" href="icons/icon-192.png">
+<meta name="mobile-web-app-capable" content="yes">
+<style>
+  :root {
+    --bg: #f6f7fb; --card: #fff; --text: #1d2433; --muted: #7a8396;
+    --accent: #ff7a1a; --border: #e5e8f0; --done: #2fb36d;
+    --high: #e5484d; --medium: #f5a524; --low: #5b8def;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #12141a; --card: #1b1e27; --text: #eceff6; --muted: #8b93a7; --border: #2a2e3b; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.4 system-ui, -apple-system, Segoe UI, sans-serif; }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 20px 16px 40px; }
+  h1 { font-size: 22px; margin: 0 0 16px; }
+  #list { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 440px), 1fr)); gap: 12px; align-items: start; }
+  #list .card, #list .empty-msg { margin-bottom: 0; }
+  #list .empty-msg { grid-column: 1 / -1; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 14px 16px; margin-bottom: 12px; }
+  .row { display: flex; gap: 8px; align-items: center; }
+  select, input, button { font: inherit; color: inherit; }
+  select, input { padding: 9px 10px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg); min-width: 0; }
+  input { flex: 1; }
+  button { cursor: pointer; border: 1px solid var(--border); background: var(--card); border-radius: 10px; padding: 8px 12px; }
+  button:disabled { opacity: .35; cursor: default; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .icon { padding: 4px 8px; line-height: 1; }
+
+  .habit { border-left: 5px solid var(--prio); }
+  .habit.p-high { --prio: var(--high); }
+  .habit.p-medium { --prio: var(--medium); }
+  .habit.p-low { --prio: var(--low); }
+  .head { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .name { font-weight: 600; font-size: 16px; flex: 1 1 140px; word-break: break-word; }
+  .badge { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+           color: #fff; background: var(--prio); border-radius: 999px; padding: 2px 8px; }
+  .stats { color: var(--muted); font-size: 13px; display: flex; gap: 14px; margin: 6px 0 10px; }
+  .stats b { color: var(--text); }
+  .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .done-btn { flex: 1 1 180px; padding: 10px; font-weight: 600; background: var(--accent); border-color: var(--accent); color: #fff; }
+  .done-btn.done { background: var(--done); border-color: var(--done); }
+  .tools { display: flex; gap: 4px; align-items: center; }
+  .tools select { padding: 6px 8px; }
+
+  .cal { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .nav { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 5px; }
+  .dow { text-align: center; font-size: 12px; color: var(--muted); }
+  .day { aspect-ratio: 1.3; max-height: 40px; width: 100%; display: flex; align-items: center; justify-content: center; border-radius: 8px;
+         border: 1px solid transparent; background: var(--bg); padding: 0; font-size: 13px; }
+  .day.empty { background: none; border: 0; cursor: default; }
+  .day.done { background: var(--accent); color: #fff; font-weight: 600; }
+  .day.today { border-color: var(--accent); }
+  .day.future { opacity: .35; cursor: default; }
+  .empty-msg { text-align: center; color: var(--muted); padding: 30px 0; }
+  .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; color: var(--muted); font-size: 13px; }
+  .tabs { display: flex; gap: 6px; margin-bottom: 14px; }
+  .tabs button { flex: 0 0 auto; padding: 8px 18px; font-weight: 600; }
+  .tabs button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bigcal { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; }
+  .bigcal .dow { padding: 4px 0; }
+  .cell { min-height: 78px; padding: 6px; border-radius: 10px; border: 1px solid var(--border); background: var(--card);
+          text-align: left; display: flex; flex-direction: column; justify-content: space-between; align-items: stretch; }
+  .cell.empty { background: none; border: 0; cursor: default; }
+  .cell.today { border-color: var(--accent); }
+  .cell.sel { outline: 2px solid var(--accent); }
+  .cell.future { opacity: .55; }
+  .cell .num { font-size: 13px; font-weight: 600; }
+  .cell .cnt { font-size: 11px; color: var(--muted); }
+  .cell.all .cnt { color: var(--done); font-weight: 700; }
+  .dots { display: flex; flex-wrap: wrap; gap: 3px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .dot.high { background: var(--high); } .dot.medium { background: var(--medium); } .dot.low { background: var(--low); }
+  .calhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+  .calhead strong { font-size: 18px; }
+  .dayrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-top: 1px solid var(--border); margin-top: 8px; }
+  .dayrow .nm { flex: 1; }
+  .dayrow button { min-width: 110px; }
+  .dayrow button.on { background: var(--done); border-color: var(--done); color: #fff; }
+  .legend { color: var(--muted); font-size: 12px; margin-top: 10px; }
+  .name-edit { flex: 1 1 140px; font-weight: 600; }
+  .head .icon[data-act=edit] { color: var(--muted); }
+  .tracker { display: flex; gap: 10px 14px; align-items: center; flex-wrap: wrap; margin-bottom: 10px;
+             padding: 8px 10px; border-radius: 10px; background: var(--bg); }
+  .tracker .cfg { display: flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+  .tracker .cfg select, .tracker .cfg input { padding: 5px 8px; }
+  .tracker .cfg input { width: 68px; flex: none; }
+  .tbody { display: flex; gap: 8px; align-items: center; flex: 1 1 220px; flex-wrap: wrap; }
+  .tclock { font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; min-width: 78px; }
+  .bar { flex: 1 1 80px; height: 8px; border-radius: 99px; background: var(--border); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .bar.full i { background: var(--done); }
+  .lock { margin: -4px 0 12px; padding: 10px 14px; border-radius: 12px; font-size: 13px;
+          background: var(--card); border: 1px dashed var(--border); color: var(--muted); }
+  .lock b { color: var(--text); }
+  .lock .pips { display: flex; gap: 5px; margin-top: 8px; }
+  .lock .pip { flex: 1; text-align: center; font-size: 11px; padding: 4px 0; border-radius: 8px;
+               background: var(--bg); border: 1px solid var(--border); }
+  .lock .pip.ok { background: var(--done); border-color: var(--done); color: #fff; font-weight: 700; }
+  .lock.open { border-style: solid; border-color: var(--done); }
+  .numtag { color: var(--muted); font-weight: 700; font-size: 13px; }
+  .num-in { width: 56px; flex: none; padding: 6px 8px; }
+  .subs { margin: 0 0 10px; padding: 8px 10px; border-radius: 10px; background: var(--bg); }
+  .subs .sub-head { font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  .sub { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+  .sub input[type=checkbox] { width: 18px; height: 18px; flex: none; accent-color: var(--done); cursor: pointer; padding: 0; }
+  .sub span { flex: 1; word-break: break-word; }
+  .sub.on span { color: var(--muted); text-decoration: line-through; }
+  .sub-add { display: flex; gap: 6px; margin-top: 6px; }
+  .sub-add input { padding: 6px 8px; }
+  .dayrow.subrow { border-top: 0; margin-top: 0; padding: 3px 0 3px 28px; }
+  .dayrow.subrow input { width: 18px; height: 18px; accent-color: var(--done); cursor: pointer; padding: 0; flex: none; }
+  .tip { border-left: 5px solid var(--accent); }
+  .tip-top { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .chip { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; border-radius: 999px;
+          padding: 2px 9px; color: #fff; background: var(--accent); }
+  .chip.fact { background: var(--low); }
+  .chip.topic { background: var(--bg); color: var(--muted); border: 1px solid var(--border); }
+  .tip-top .grow { flex: 1; }
+  .tip-top select { padding: 5px 8px; font-size: 13px; }
+  .tip-text { font-size: 16px; line-height: 1.45; }
+  .tip-src { margin-top: 8px; font-size: 12px; color: var(--muted); font-style: italic; }
+  .info h2 { font-size: 17px; margin: 0; }
+  .info details { background: var(--card); border: 1px solid var(--border); border-radius: 16px; padding: 12px 16px; margin-bottom: 12px; }
+  .info summary { cursor: pointer; font-weight: 700; font-size: 16px; }
+  .info details > :not(summary) { margin-top: 10px; }
+  .info ul { margin: 8px 0 0; padding-left: 20px; }
+  .info li { margin: 5px 0; }
+  .info p { margin: 8px 0 0; }
+  .info .note { color: var(--muted); font-size: 13px; }
+  .info a { color: var(--accent); }
+  .info .src { color: var(--muted); font-size: 12px; font-style: italic; display: block; }
+  .info .entry { padding: 8px 0; border-top: 1px solid var(--border); }
+  .info .entry:first-of-type { border-top: 0; }
+  .info .refs li { font-size: 13px; }
+  .info h3 { font-size: 14px; margin: 14px 0 0; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .titlebar { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-bottom: 16px; flex-wrap: wrap; }
+  .titlebar h1 { margin: 0; }
+  input[type=checkbox] { flex: none; width: auto; padding: 0; }
+  .topbar label { display: inline-flex; gap: 6px; align-items: center; }
+  .topbar .opts { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+
+  .notice { border-left: 5px solid var(--done); }
+  .notice.sugg { border-left-color: var(--accent); }
+  .miss { padding: 8px 0; border-top: 1px solid var(--border); }
+  .miss:first-of-type { border-top: 0; }
+  .reasons { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+  .reasons button { padding: 5px 10px; font-size: 13px; }
+
+  .lines { color: var(--muted); font-size: 13px; margin: -2px 0 8px; }
+  .identity { font-size: 13px; color: var(--muted); font-style: italic; margin-bottom: 8px; }
+  .identity.on { color: var(--done); font-weight: 600; }
+  .nudge { font-size: 13px; padding: 6px 10px; border-radius: 10px; background: var(--bg); margin-bottom: 8px; }
+  .auto { font-size: 13px; padding: 6px 10px; border-radius: 10px; background: var(--bg); margin-top: 10px; }
+  .auto span { color: var(--muted); font-size: 12px; }
+  .plan { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .plan label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .plan input, .plan select { flex: none; width: 100%; }
+  .plan .note { grid-column: 1 / -1; font-size: 12px; color: var(--muted); }
+
+  #toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); max-width: min(560px, 90vw); z-index: 60;
+           background: var(--text); color: var(--bg); padding: 12px 18px; border-radius: 14px; font-weight: 600; text-align: center; }
+  #pauseBox { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  #pauseBox[hidden] { display: none; }
+  .pause-in { background: var(--card); border-radius: 20px; padding: 28px; text-align: center; width: min(340px, 90vw); }
+  #pauseCircle { width: 120px; height: 120px; border-radius: 50%; background: var(--accent); opacity: .85; margin: 10px auto 18px;
+                 animation: breathe 10s ease-in-out infinite; }
+  @keyframes breathe { 0% { transform: scale(.6); } 40% { transform: scale(1.1); } 100% { transform: scale(.6); } }
+  #pauseText { font-size: 20px; font-weight: 700; }
+  #pauseTime { color: var(--muted); margin: 6px 0 16px; }
+
+  .rv-head, .rv-row { display: flex; align-items: center; gap: 10px; padding: 6px 0; }
+  .rv-row { border-top: 1px solid var(--border); }
+  .rv-name { flex: 1; min-width: 0; word-break: break-word; }
+  .rv-days { display: flex; gap: 4px; }
+  .rv-days i, .rv-head .rv-days span { width: 18px; text-align: center; font-size: 11px; color: var(--muted); font-style: normal; }
+  .rv-days i { height: 18px; border-radius: 5px; background: var(--bg); border: 1px solid var(--border); }
+  .rv-days i.on { background: var(--done); border-color: var(--done); }
+  .rv-row b { width: 34px; text-align: right; }
+  .rv-bar { display: flex; align-items: center; gap: 8px; margin: 6px 0; font-size: 13px; }
+  .rv-bar span:first-child { width: 150px; }
+  .rv-bar i { display: block; height: 10px; border-radius: 99px; background: var(--accent); }
+  .rv-sec { margin-top: 18px; }
+  .rv-sec h3 { margin: 0 0 6px; font-size: 15px; }
+  .tb-right { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .pts { font-size: 14px; min-width: 150px; }
+  .lvbar { height: 6px; border-radius: 99px; background: var(--border); overflow: hidden; margin-top: 4px; }
+  .lvbar i { display: block; height: 100%; background: var(--accent); }
+  .fail-btn { flex: 0 1 auto; padding: 10px 14px; font-weight: 600; }
+  .fail-btn.on { background: var(--high); border-color: var(--high); color: #fff; }
+  .day.fail { background: var(--high); color: #fff; font-weight: 600; }
+  .dayrow button.bad { background: var(--high); border-color: var(--high); color: #fff; }
+  #acctBox { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 55; padding: 16px; }
+  #acctBox[hidden] { display: none; }
+  .acct { text-align: left; width: min(400px, 100%); max-height: 90vh; overflow-y: auto; }
+  .acct h2 { margin: 0 0 10px; font-size: 18px; }
+  .acct input { width: 100%; margin-bottom: 8px; flex: none; }
+  .acct .stack { display: flex; flex-direction: column; gap: 8px; }
+  .acct .row2 { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .acct .msg { color: var(--high); font-size: 13px; margin-top: 8px; }
+  .acct .ok { color: var(--done); }
+  .acct .note { color: var(--muted); font-size: 13px; }
+  .acct hr { border: 0; border-top: 1px solid var(--border); margin: 14px 0; }
+
+  @media (max-width: 560px) {
+    .wrap { padding: 14px 12px 40px; }
+    .card { padding: 12px; }
+    .tabs { flex-wrap: wrap; }
+    .tabs button { padding: 8px 12px; }
+    .cell { min-height: 54px; padding: 4px; }
+    .cell .cnt { font-size: 10px; }
+    .dot { width: 6px; height: 6px; }
+    .bigcal, .grid { gap: 3px; }
+    .rv-bar span:first-child { width: 100px; }
+    .pts { min-width: 0; }
+    .plan { grid-template-columns: 1fr; }
+    #toast { bottom: 16px; }
+    .card.row { flex-wrap: wrap; }
+    #newHabit { flex: 1 1 100%; }
+  }
+  .daysel { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--muted); }
+  .daysel .daychip { padding: 5px 9px; font-size: 12px; }
+  .daysel .daychip.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .day.off { opacity: .5; }
+  .rv-days i.off { border-style: dashed; opacity: .5; }
+  .habit.rest { opacity: .8; }
+  .today-label { color: var(--muted); font-size: 14px; font-weight: 600; margin-top: 2px; }
+  .today-label b { color: var(--accent); }
+  .slot-head { grid-column: 1 / -1; font-weight: 700; margin-top: 6px; display: flex; gap: 8px; align-items: baseline; }
+  .slot-head span { color: var(--muted); font-weight: 500; font-size: 13px; }
+  .slot-head.now { color: var(--accent); }
+  .slot-head em { font-style: normal; font-size: 11px; background: var(--accent); color: #fff; border-radius: 99px; padding: 1px 8px; }
+  #dayBox { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; z-index: 55; padding: 16px; }
+  #dayBox[hidden] { display: none; }
+  .dayform { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .dayform label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+  .dayform label.wide, .dayform .wide { grid-column: 1 / -1; }
+  .dayform input, .dayform select { width: 100%; flex: none; }
+  .daysel2 { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .daysel2 button { padding: 5px 9px; font-size: 12px; }
+  .daysel2 button.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 700; }
+  .sub-card { border: 1px solid var(--border); border-radius: 12px; padding: 8px 10px; margin-top: 8px; background: var(--card); }
+  .sub-card.on { border-color: var(--done); }
+  .sub-card.opt { border-style: dashed; }
+  .sc-head { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .sc-name { flex: 1 1 120px; font-weight: 600; border: 1px solid transparent; background: transparent; }
+  .sc-name:focus { border-color: var(--border); background: var(--bg); }
+  .sc-head select { padding: 4px 6px; font-size: 12px; flex: none; }
+  .sc-goal { width: 64px; flex: none; padding: 4px 6px; }
+  .sc-opt, .sub-optl { font-size: 12px; color: var(--muted); display: inline-flex; gap: 4px; align-items: center; white-space: nowrap; }
+  .sc-body { margin-top: 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .sc-btn { flex: 1 1 140px; padding: 8px; font-weight: 600; }
+  .sc-btn.done { background: var(--done); border-color: var(--done); color: #fff; }
+  .sc-btn.bad.on { background: var(--high); border-color: var(--high); color: #fff; }
+  .tclock.sm { font-size: 16px; min-width: 64px; }
+  .sub-add select { padding: 6px 8px; flex: none; }
+  .kind-edit { flex: none; padding: 8px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="titlebar"><div><h1>🔥 Streak</h1><div id="todayLabel" class="today-label"></div></div><div class="tb-right"><div id="pts" class="pts"></div><button id="dayBtn" title="Set your work days and daily times">⚙ My day</button><button id="acctBtn" title="Sign in to save your progress online">☁ Sign in</button><button id="pauseBtn" title="A one-minute breathing pause before you start">🧘 Pause 1 min</button></div></div>
+
+  <div class="tabs">
+    <button id="tabHabits" class="active">Habits</button>
+    <button id="tabCal">Calendar</button>
+    <button id="tabReview">Review</button>
+    <button id="tabInfo">Info</button>
+  </div>
+
+  <div class="card tip" id="tipCard">
+    <div class="tip-top">
+      <span class="chip" id="tipKind"></span>
+      <span class="chip topic" id="tipTopic"></span>
+      <span class="grow"></span>
+      <select id="tipFilter" title="Which tips to show">
+        <option value="all">All</option>
+        <option value="tip">Tips from books</option>
+        <option value="fact">Research facts</option>
+        <option value="habits">Habits</option>
+        <option value="procrastination">Procrastination</option>
+        <option value="mindfulness">Mindfulness</option>
+      </select>
+      <button class="icon" id="tipNext">Next ›</button>
+    </div>
+    <div class="tip-text" id="tipText"></div>
+    <div class="tip-src" id="tipSrc"></div>
+  </div>
+
+  <div id="habitsView">
+  <div id="notices"></div>
+  <div class="card row">
+    <input id="newHabit" placeholder="New habit (e.g. Read 20 min)" maxlength="40">
+    <select id="newType" title="Card type">
+      <option value="yesno">Yes / No</option>
+      <option value="counter">Counter</option>
+      <option value="timer">Timer</option>
+      <option value="avoid">Avoid (succeed or fail)</option>
+    </select>
+    <select id="newPrio" title="Priority">
+      <option value="high">High</option>
+      <option value="medium" selected>Medium</option>
+      <option value="low">Low</option>
+    </select>
+    <button class="primary" id="addHabit">Add</button>
+  </div>
+
+  <div class="lock" id="lockInfo"></div>
+
+  <div class="topbar">
+    <span id="summary"></span>
+    <span class="opts"><label title="Play a success sound when a habit is finished"><input type="checkbox" id="soundChk"> Sound</label>
+    <label title="One missed day in a row will not break your streak (research: a single miss does not derail habit formation)"><input type="checkbox" id="graceOpt"> Grace day</label>
+    <label>Order by
+      <select id="sortMode">
+        <option value="priority">Priority, then number</option>
+        <option value="number">Number only</option>
+        <option value="slot">Time of day</option>
+      </select>
+    </label></span>
+  </div>
+
+  <div id="list"></div>
+  </div>
+
+
+  <div id="reviewView" hidden>
+    <div class="card" id="reviewBody"></div>
+  </div>
+
+  <div id="infoView" class="info" hidden>
+    <div class="card">
+      <h2>Habit science, in one place</h2>
+      <p class="note">This page combines book advice and published research on habits, chaining, why habits fail, procrastination and mindfulness. <b>Research</b> means a published study. <b>Book advice</b> comes from practitioners and is usually a good idea but less tested. Full references are at the bottom.</p>
+    </div>
+
+    <details open>
+      <summary>How habits form</summary>
+      <ul>
+        <li><b>Cue, routine, reward.</b> A habit runs on a cue that triggers a routine that ends in a reward. To change one, keep the cue and the reward and swap the routine. <span class="src">The Power of Habit, Duhigg (2012)</span></li>
+        <li><b>Context and repetition.</b> Habits are tied to the place and situation where you repeat them. In a student diary study, about 43% of behaviors were habitual. Changing your surroundings and adding or removing friction often works better than relying on willpower. <span class="src">Wood, Quinn &amp; Kashy (2002); Good Habits, Bad Habits, Wood (2019)</span></li>
+        <li><b>Motivation, ability, prompt.</b> A behavior happens when all three come together. If a habit isn't happening, make it easier or add a clearer prompt. Start tiny, anchor it to something you already do, and celebrate right away. <span class="src">Tiny Habits, Fogg (2019)</span></li>
+        <li><b>The four laws.</b> Make it obvious, attractive, easy and satisfying. Add the two-minute rule (shrink it), identity ("I am someone who..."), environment design, never missing twice, and the Goldilocks rule (a task just hard enough). <span class="src">Atomic Habits, Clear (2018)</span></li>
+        <li><b>How long it takes.</b> In a study of 96 volunteers, a daily habit took a median of 66 days to feel automatic, ranging from 18 to 254 days. Missing a single day did not materially affect the process. The popular "21 days" figure is not supported by this research. <span class="src">Lally et al. (2010)</span></li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>Chaining habits</summary>
+      <ul>
+        <li><b>Habit stacking.</b> "After I [current habit], I will [new habit]." Each habit becomes the cue for the next. <span class="src">Atomic Habits (Clear); anchoring in Tiny Habits (Fogg)</span></li>
+        <li><b>If-then plans are the strongest evidence.</b> Pooling 94 tests, plans of the form "If situation X, then I will do Y" had a medium-to-large effect on reaching goals (d = 0.65). <span class="src">Gollwitzer (1999); Gollwitzer &amp; Sheeran (2006)</span></li>
+        <li><b>Showing progress helps.</b> Customers given a loyalty card with 2 of 10 stamps already filled finished it more often (34%) than customers with an empty 8-stamp card (19%), though both needed 8 purchases. <span class="src">Nunes &amp; Dr&egrave;ze (2006)</span></li>
+        <li><b>Chains are fragile.</b> One failure can take down every step after it. After a slip, people often think "I've blown it, so why bother", sometimes called the what-the-hell effect or abstinence violation effect. Plan a smaller fallback version of each step and restart at the step that failed. <span class="src">Polivy &amp; Herman (1985); Marlatt &amp; Gordon (1985)</span></li>
+        <li><b>"Don't break the chain"</b> (the Seinfeld story) is a popular anecdote, not a research finding.</li>
+        <li><b>Behavior chaining</b> also appears in applied behavior analysis, where a complex task is taught as a series of linked steps. This is similar to your sub-habits.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>When a habit doesn't happen</summary>
+      <p class="note">Treat a miss as a design problem to debug, not a personal failing. These frameworks work as checklists.</p>
+      <ul>
+        <li><b>Fogg model:</b> Was there no prompt, was it too hard, or was motivation low?</li>
+        <li><b>Atomic Habits laws:</b> Was it not obvious, not attractive, not easy, or not satisfying?</li>
+        <li><b>COM-B:</b> Do you have the capability, the opportunity and the motivation? <span class="src">Michie, van Stralen &amp; West (2011)</span></li>
+        <li><b>WOOP:</b> Name your Wish, the Outcome, the main Obstacle, then make an if-then Plan for it. Imagining only success can lower effort. <span class="src">Oettingen (2014)</span></li>
+        <li><b>Pre-mortem:</b> Imagine the habit failed, list why, and fix those causes first. <span class="src">Gary Klein (2007)</span></li>
+        <li><b>Track it.</b> A review of 138 experiments (about 20,000 people) found that monitoring progress helps people reach goals, and helps more when it is written down or shared. <span class="src">Harkin et al. (2016)</span></li>
+        <li><b>Common reasons:</b> forgot, no time, too tired, too hard or too big, didn't feel like it, travel or a changed routine, sick, something more urgent, or the previous step in a chain failed.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>Procrastination</summary>
+      <ul>
+        <li><b>Why we do it.</b> Temporal motivation theory: Motivation = (Expectancy &times; Value) / (Impulsiveness &times; Delay). A meta-analysis of 691 correlations found the strongest predictors were task unpleasantness, delay of the reward, low self-belief and impulsiveness. <span class="src">Steel (2007)</span></li>
+        <li><b>It is about feelings.</b> Procrastination is largely a way to avoid an unpleasant feeling in the short term, so it responds better to emotional strategies than to time-management tricks. <span class="src">Sirois &amp; Pychyl (2013)</span></li>
+        <li><b>Forgive yourself.</b> Students who forgave themselves for procrastinating before a first exam procrastinated less before the next one. <span class="src">Wohl, Pychyl &amp; Bennett (2010)</span></li>
+        <li><b>Present bias.</b> Rewards that are far away feel smaller than near ones, which favors short-term comfort. <span class="src">Ainslie; Laibson</span></li>
+        <li><b>Commitment devices.</b> Self-imposed deadlines help, though deadlines set by someone else work better. <span class="src">Ariely &amp; Wertenbroch (2002)</span></li>
+        <li><b>Temptation bundling.</b> Gym-goers who could only hear a gripping audiobook at the gym visited 51% more often in the early weeks. <span class="src">Milkman, Minson &amp; Volpp (2014)</span></li>
+        <li><b>Fresh starts.</b> Gym visits, diet searches and goal commitments rise after a new week, month, year or birthday. <span class="src">Dai, Milkman &amp; Riis (2014)</span></li>
+        <li><b>Practical tricks</b> such as "just start for 5 minutes", the two-minute rule and Pomodoro sessions are popular, but have thinner research behind them.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>Mindfulness</summary>
+      <ul>
+        <li><b>What it is.</b> Paying attention to the present moment without judging it. The best-known program is Mindfulness-Based Stress Reduction. <span class="src">Kabat-Zinn (1990)</span></li>
+        <li><b>Wandering minds.</b> In a study of 2,250 volunteers, minds wandered about 47% of the time, and wandering went with lower happiness. <span class="src">Killingsworth &amp; Gilbert (2010)</span></li>
+        <li><b>Urge surfing.</b> Treat a craving as a sensation to be curious about and watch rise and fall. In one smoking trial, mindfulness training had 31% abstinence versus 6% for a standard program at a 4-month follow-up. <span class="src">Brewer, The Craving Mind (2017); Brewer et al. (2011)</span></li>
+        <li><b>RAIN.</b> Recognize, Allow, Investigate with kindness, Nurture. <span class="src">Michele McDonald; Brach (2019)</span></li>
+        <li><b>Self-compassion.</b> Self-kindness, common humanity and mindful awareness help you recover from a lapse instead of spiraling. <span class="src">Neff (2011)</span></li>
+        <li><b>Values-based action.</b> Accept uncomfortable thoughts and feelings and act on what matters to you. <span class="src">Acceptance and Commitment Therapy, Hayes et al. (1999)</span></li>
+        <li><b>Caution.</b> Much mindfulness research is small or lacks good controls, so treat big claims with care. <span class="src">Van Dam et al. (2018)</span></li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>How strong is the evidence?</summary>
+      <ul>
+        <li>Lally's 66 days is a median from 96 people doing simple behaviors. It is not a rule for every habit.</li>
+        <li>Popular claims such as "21 days" and the Seinfeld chain come from books and anecdotes, not studies.</li>
+        <li>Clear and Fogg are practitioners. Their methods are plausible and widely used, but the full systems have not been rigorously tested as a whole.</li>
+        <li>Streaks can backfire if one miss makes you quit, so plan for restarts and keep a minimum version of each habit.</li>
+      </ul>
+    </details>
+
+    <details>
+      <summary>All tips and facts</summary>
+      <div id="infoTips"></div>
+    </details>
+
+    <details>
+      <summary>References</summary>
+      <h3>Books</h3>
+      <ul class="refs">
+        <li>Clear, J. (2018). <i>Atomic Habits</i>. Avery.</li>
+        <li>Fogg, B. J. (2019). <i>Tiny Habits</i>. Houghton Mifflin Harcourt.</li>
+        <li>Duhigg, C. (2012). <i>The Power of Habit</i>. Random House.</li>
+        <li>Wood, W. (2019). <i>Good Habits, Bad Habits</i>. Farrar, Straus and Giroux.</li>
+        <li>Brewer, J. (2017). <i>The Craving Mind</i>. Yale University Press.</li>
+        <li>Oettingen, G. (2014). <i>Rethinking Positive Thinking</i>. Current.</li>
+        <li>Neff, K. (2011). <i>Self-Compassion</i>. William Morrow.</li>
+        <li>Kabat-Zinn, J. (1990). <i>Full Catastrophe Living</i>. Delacorte.</li>
+        <li>Brach, T. (2019). <i>Radical Compassion</i>. Viking.</li>
+        <li>Hayes, S., Strosahl, K. &amp; Wilson, K. (1999). <i>Acceptance and Commitment Therapy</i>. Guilford Press.</li>
+        <li>Marlatt, G. A. &amp; Gordon, J. R. (1985). <i>Relapse Prevention</i>. Guilford Press.</li>
+      </ul>
+      <h3>Studies and papers</h3>
+      <ul class="refs">
+        <li>Lally, P., van Jaarsveld, C., Potts, H. &amp; Wardle, J. (2010). How are habits formed: Modelling habit formation in the real world. <i>European Journal of Social Psychology, 40</i>, 998-1009. <a target="_blank" rel="noopener" href="https://onlinelibrary.wiley.com/doi/abs/10.1002/ejsp.674">Link</a></li>
+        <li>Wood, W., Quinn, J. &amp; Kashy, D. (2002). Habits in everyday life: Thought, emotion, and action. <i>Journal of Personality and Social Psychology, 83</i>, 1281-1297. <a target="_blank" rel="noopener" href="https://dornsife.usc.edu/wendy-wood/wp-content/uploads/sites/183/2023/10/Wood.Quinn_.Kashy_.2002_Habits_in_everyday_life.pdf">Link</a></li>
+        <li>Gollwitzer, P. (1999). Implementation intentions: Strong effects of simple plans. <i>American Psychologist, 54</i>, 493-503.</li>
+        <li>Gollwitzer, P. &amp; Sheeran, P. (2006). Implementation intentions and goal achievement: A meta-analysis of effects and processes. <i>Advances in Experimental Social Psychology, 38</i>, 69-119. <a target="_blank" rel="noopener" href="https://www.researchgate.net/publication/37367696_Implementation_Intentions_and_Goal_Achievement_A_Meta-Analysis_of_Effects_and_Processes">Link</a></li>
+        <li>Harkin, B. et al. (2016). Does monitoring goal progress promote goal attainment? A meta-analysis of the experimental evidence. <i>Psychological Bulletin, 142</i>, 198-229. <a target="_blank" rel="noopener" href="https://eprints.whiterose.ac.uk/id/eprint/87431/">Link</a></li>
+        <li>Nunes, J. &amp; Dr&egrave;ze, X. (2006). The endowed progress effect: How artificial advancement increases effort. <i>Journal of Consumer Research, 32</i>, 504-512.</li>
+        <li>Polivy, J. &amp; Herman, C. P. (1985). Dieting and binging: A causal analysis. <i>American Psychologist, 40</i>, 193-201.</li>
+        <li>Michie, S., van Stralen, M. &amp; West, R. (2011). The behaviour change wheel: A new method for characterising and designing behaviour change interventions. <i>Implementation Science, 6</i>, 42. <a target="_blank" rel="noopener" href="https://research.vu.nl/en/publications/the-behaviour-change-wheel-a-new-method-for-characterising-and-de/">Link</a></li>
+        <li>Klein, G. (2007). Performing a project premortem. <i>Harvard Business Review, 85</i>(9).</li>
+        <li>Oettingen, G. WOOP research publications. <a target="_blank" rel="noopener" href="https://woopmylife.org/en/publications">Link</a></li>
+        <li>Steel, P. (2007). The nature of procrastination: A meta-analytic and theoretical review of quintessential self-regulatory failure. <i>Psychological Bulletin, 133</i>, 65-94. <a target="_blank" rel="noopener" href="https://www.researchgate.net/publication/6598646_The_Nature_of_Procrastination_A_Meta-Analytic_and_Theoretical_Review_of_Quintessential_Self-Regulatory_Failure">Link</a></li>
+        <li>Sirois, F. &amp; Pychyl, T. (2013). Procrastination and the priority of short-term mood regulation. <i>Social and Personality Psychology Compass, 7</i>, 115-127.</li>
+        <li>Wohl, M., Pychyl, T. &amp; Bennett, S. (2010). I forgive myself, now I can study: How self-forgiveness for procrastinating can reduce future procrastination. <i>Personality and Individual Differences, 48</i>, 803-808. <a target="_blank" rel="noopener" href="https://www.bps.org.uk/research-digest/cure-procrastination-forgive-yourself">Summary</a></li>
+        <li>Ariely, D. &amp; Wertenbroch, K. (2002). Procrastination, deadlines, and performance: Self-control by precommitment. <i>Psychological Science, 13</i>, 219-224.</li>
+        <li>Milkman, K., Minson, J. &amp; Volpp, K. (2014). Holding the Hunger Games hostage at the gym: An evaluation of temptation bundling. <i>Management Science, 60</i>, 283-299. <a target="_blank" rel="noopener" href="https://ideas.repec.org/a/inm/ormnsc/v60y2014i2p283-299.html">Link</a></li>
+        <li>Dai, H., Milkman, K. &amp; Riis, J. (2014). The fresh start effect: Temporal landmarks motivate aspirational behavior. <i>Management Science, 60</i>, 2563-2582. <a target="_blank" rel="noopener" href="https://papers.ssrn.com/sol3/papers.cfm?abstract_id=2204126">Link</a></li>
+        <li>Killingsworth, M. &amp; Gilbert, D. (2010). A wandering mind is an unhappy mind. <i>Science, 330</i>, 932. <a target="_blank" rel="noopener" href="https://news.harvard.edu/gazette/story/2010/11/wandering-mind-not-a-happy-mind/">Summary</a></li>
+        <li>Brewer, J. et al. (2011). Mindfulness training for smoking cessation: Results from a randomized controlled trial. <i>Drug and Alcohol Dependence, 119</i>, 72-80. <a target="_blank" rel="noopener" href="https://pmc.ncbi.nlm.nih.gov/articles/PMC3619004">Link</a></li>
+        <li>Van Dam, N. et al. (2018). Mind the hype: A critical evaluation and prescriptive agenda for research on mindfulness and meditation. <i>Perspectives on Psychological Science, 13</i>, 36-61. <a target="_blank" rel="noopener" href="https://scholars.mssm.edu/en/publications/mind-the-hype-a-critical-evaluation-and-prescriptive-agenda-for-r-2/">Link</a></li>
+      </ul>
+    </details>
+  </div>
+
+  <div id="calView" hidden>
+    <div class="card">
+      <div class="calhead">
+        <button id="calPrev">‹</button>
+        <strong id="calLabel"></strong>
+        <span class="row"><button id="calToday">Today</button><button id="calNext">›</button></span>
+      </div>
+      <div class="bigcal" id="calDows"></div>
+      <div class="bigcal" id="calGrid" style="margin-top:6px"></div>
+      <div class="legend">Dots = habits done that day (red high, amber medium, blue low). Click a day to edit it.</div>
+    </div>
+    <div class="card" id="dayPanel"></div>
+  </div>
+</div>
+
+<div id="toast" hidden></div>
+<div id="dayBox" hidden>
+  <div class="pause-in acct">
+    <h2>My day</h2>
+    <p class="note">Tell the app how you spend your week. It uses this to show your work days and days off, and to group habits by time of day.</p>
+    <div id="dayBody"></div>
+    <hr>
+    <button id="dayClose">Done</button>
+  </div>
+</div>
+<div id="acctBox" hidden>
+  <div class="pause-in acct">
+    <h2>Account</h2>
+    <div id="acctBody"></div>
+    <hr>
+    <button id="acctClose">Close</button>
+  </div>
+</div>
+<div id="pauseBox" hidden>
+  <div class="pause-in">
+    <div id="pauseCircle"></div>
+    <div id="pauseText"></div>
+    <div id="pauseTime"></div>
+    <button id="pauseClose">Close</button>
+  </div>
+</div>
+
+<script src="firebase-config.js"></script>
+<script>
+const KEY = 'streak-app-v1';
+const PRIOS = ['high', 'medium', 'low'];
+let state = load();
+const timers = {};                     // habit id -> { start: ms, date: 'YYYY-MM-DD' } for running timers
+let lastPersist = Date.now();
+const planOpen = new Set();             // habit ids with the Plan panel open
+let suggestion = null;                 // { name, text } shown after choosing a miss reason
+let focusSub = null;                   // habit id whose sub-habit box should regain focus
+let editingId = null;                  // habit being renamed
+const expanded = new Set();            // habit ids with calendar open
+const views = {};                      // habit id -> first of month shown
+
+function load() {
+  let s;
+  try { s = JSON.parse(localStorage.getItem(KEY)); } catch {}
+  return normalize(s);
+}
+function normalize(s) {
+  s = s && Array.isArray(s.habits) ? s : { habits: [] };
+  s.habits.forEach((h, i) => {
+    if (!PRIOS.includes(h.priority)) h.priority = 'medium';
+    if (typeof h.num !== 'number') h.num = i + 1;
+    if (!Array.isArray(h.subs)) h.subs = [];
+    // sub-habits are full cards: Yes/No, counter, timer or avoid, each optionally outside the streak
+    h.subs = h.subs.map(x => ({ type: 'do', mode: 'none', optional: false, ...x, isSub: true, dates: x.dates || [], fails: x.fails || {}, progress: x.progress || {} }));
+    h.misses ||= {}; h.mini ||= {}; h.auto ||= []; h.fails ||= {};
+    h.type = h.type === 'avoid' ? 'avoid' : 'do';
+    if (!['morning', 'work', 'evening', 'night', 'any'].includes(h.slot)) h.slot = 'any';
+    if (!Array.isArray(h.days) || !h.days.length) h.days = [0, 1, 2, 3, 4, 5, 6];   // days of the week this habit is scheduled (0 = Sunday)
+  });
+  if (!['number', 'slot'].includes(s.sort)) s.sort = 'priority';
+  s.profile = { preset: 'office', workDays: [1, 2, 3, 4, 5], wake: '06:30', workStart: '09:00', workEnd: '17:00', sleep: '23:00', ...(s.profile || {}) };
+  if (!Array.isArray(s.profile.workDays)) s.profile.workDays = [1, 2, 3, 4, 5];
+  s.sound = s.sound !== false;           // success sound on by default
+  s.widget = s.widget !== false;         // desktop timer widget on by default
+  s.grace = s.grace !== false;           // grace day on by default
+  s.freshDismissed ||= '';
+  if (!['all', 'tip', 'fact', 'habits', 'procrastination', 'mindfulness'].includes(s.tipFilter)) s.tipFilter = 'all';
+  return s;
+}
+function save() {
+  state.updatedAt = Date.now();
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+  scheduleSync();
+}
+
+const $ = id => document.getElementById(id);
+const pad = n => String(n).padStart(2, '0');
+const fmt = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parse = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const today = () => { const t = new Date(); t.setHours(0, 0, 0, 0); return t; };
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+// Which days of the week a habit is scheduled on. Days off neither build nor break a streak.
+const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const scheduled = (h, d) => !h.days || h.days.includes(d.getDay());
+const isWorkDay = d => state.profile.workDays.includes(d.getDay());
+function daysLabel(h) {
+  const all = [0, 1, 2, 3, 4, 5, 6], k = h.days.join('');
+  const work = state.profile.workDays.join(''), off = all.filter(x => !state.profile.workDays.includes(x)).join('');
+  if (work && k === work) return 'Work days';
+  if (off && k === off) return 'Days off';
+  return k === '12345' ? 'Weekdays' : k === '06' ? 'Weekends' : h.days.map(i => DAY_NAMES[i]).join(', ');
+}
+
+// ---------- How you spend your day: profile and time-of-day slots ----------
+const SLOTS = [['morning', 'Morning'], ['work', 'Work hours'], ['evening', 'Evening'], ['night', 'Night'], ['any', 'Anytime']];
+const SLOT_KEYS = SLOTS.map(x => x[0]);
+const PRESETS = {
+  office: { label: 'Office worker', workDays: [1, 2, 3, 4, 5], wake: '06:30', workStart: '09:00', workEnd: '17:00', sleep: '23:00' },
+  student: { label: 'Student', workDays: [1, 2, 3, 4, 5], wake: '07:00', workStart: '09:00', workEnd: '15:00', sleep: '23:00' },
+  remote: { label: 'Work from home', workDays: [1, 2, 3, 4, 5], wake: '07:00', workStart: '08:30', workEnd: '16:30', sleep: '23:00' },
+  weekend: { label: 'Works weekends', workDays: [0, 6], wake: '07:30', workStart: '10:00', workEnd: '18:00', sleep: '00:00' },
+  custom: { label: 'Custom' },
+};
+const mins = hm => { const [h, m] = (hm || '0:0').split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const inRange = (m, a, b) => a <= b ? (m >= a && m < b) : (m >= a || m < b);          // works across midnight
+function slotRanges() {
+  const p = state.profile;
+  return [['morning', p.wake, p.workStart], ['work', p.workStart, p.workEnd], ['evening', p.workEnd, p.sleep], ['night', p.sleep, p.wake]]
+    .map(([key, a, b]) => ({ key, a, b }));
+}
+function currentSlot() {
+  const n = new Date(), m = n.getHours() * 60 + n.getMinutes();
+  const r = slotRanges().find(x => inRange(m, mins(x.a), mins(x.b)));
+  return r ? r.key : 'any';
+}
+const slotLabel = (key, d = today()) => key === 'work' && !isWorkDay(d) ? 'Daytime' : (SLOTS.find(x => x[0] === key) || ['', 'Anytime'])[1];
+// ---------- Timing and chains ----------
+// A habit has an optional start time (h.remind) and length in minutes (h.dur; a timer habit uses its timer goal).
+// A chained habit with no start time of its own starts when the habit before it ends.
+const durOf = h => Math.max(0, Math.round(Number(h.dur) || (h.mode === 'timer' ? h.target || 25 : 0) || 0));
+const hm = m => pad(Math.floor(m / 60) % 24) + ':' + pad(m % 60);
+function effStart(h, seen = new Set()) {            // minutes after midnight, or null when there is no time
+  if (h.remind) return mins(h.remind);
+  const a = state.habits.find(x => x.id === h.anchor);
+  if (!a || seen.has(h.id)) return null;
+  seen.add(h.id);
+  const st = effStart(a, seen);
+  return st === null ? null : st + durOf(a);
+}
+function chainOf(h) {                               // the habits before and after this one, in order
+  const out = [h], seen = new Set([h.id]);
+  for (let x = h; ;) { const a = state.habits.find(y => y.id === x.anchor); if (!a || seen.has(a.id)) break; seen.add(a.id); out.unshift(a); x = a; }
+  for (let x = h; ;) { const n = state.habits.find(y => y.anchor === x.id && !seen.has(y.id)); if (!n) break; seen.add(n.id); out.push(n); x = n; }
+  return out;
+}
+function slotAt(m) { const r = slotRanges().find(x => inRange(m, mins(x.a), mins(x.b))); return r ? r.key : 'any'; }
+// the part of the day a habit belongs to: the one you chose, or worked out from its start time
+const habitSlot = h => { if (h.slot && h.slot !== 'any') return h.slot; const st = effStart(h); return st === null ? 'any' : slotAt(st); };
+
+function slotHead(list, i, h) {
+  const hs = habitSlot(h);
+  if (state.sort !== 'slot' || (i > 0 && habitSlot(list[i - 1]) === hs)) return '';
+  const r = slotRanges().find(x => x.key === hs), now = hs === currentSlot();
+  return `<div class="slot-head ${now ? 'now' : ''}">${slotLabel(hs)} ${r ? `<span>${r.a} to ${r.b}</span>` : ''}${now ? '<em>now</em>' : ''}</div>`;
+}
+
+// Display order: by priority then number (default), or by number alone. Ties keep creation order.
+function ordered() {
+  const bySlot = state.sort === 'slot' ? (a, b) => SLOT_KEYS.indexOf(habitSlot(a)) - SLOT_KEYS.indexOf(habitSlot(b)) : () => 0;
+  const byTime = state.sort === 'slot' ? (a, b) => (effStart(a) ?? 1e9) - (effStart(b) ?? 1e9) : () => 0;
+  const byPrio = state.sort === 'number' ? () => 0 : (a, b) => PRIOS.indexOf(a.priority) - PRIOS.indexOf(b.priority);
+  return [...state.habits].sort((a, b) => bySlot(a, b) || byTime(a, b) || byPrio(a, b) || a.num - b.num
+    || state.habits.indexOf(a) - state.habits.indexOf(b));
+}
+
+// ---------- Card types (used by habits and by sub-habits) ----------
+const KINDS = [['yesno', 'Yes / No'], ['counter', 'Counter'], ['timer', 'Timer'], ['avoid', 'Avoid (succeed or fail)']];
+const cardKind = x => x.type === 'avoid' ? 'avoid' : x.mode === 'timer' ? 'timer' : x.mode === 'counter' ? 'counter' : 'yesno';
+const kindFields = kind => kind === 'avoid' ? { type: 'avoid', mode: 'none' }
+  : kind === 'timer' ? { type: 'do', mode: 'timer', target: 25 }
+  : kind === 'counter' ? { type: 'do', mode: 'counter', target: 8 }
+  : { type: 'do', mode: 'none' };
+function setKind(x, kind) {              // change what kind of card a habit or sub-habit is, keeping its history
+  if (cardKind(x) === kind) return;
+  commitTimer(x);
+  Object.assign(x, kindFields(kind));    // a fresh default goal for the new type
+  if (typeof widgetKeep !== 'undefined') widgetKeep.delete(x.id);
+}
+const allItems = () => state.habits.flatMap(h => [h, ...h.subs]);
+const findItem = id => allItems().find(x => x.id === id);
+
+// A habit with sub-habits can only be completed on a day when every REQUIRED sub-habit is done that day.
+// Optional sub-habits never hold up the habit or its streak.
+const canComplete = (h, date) => (h.subs || []).filter(x => !x.optional).every(x => x.dates.includes(date));
+function setSubDone(h, sub, date, on) {
+  const i = sub.dates.indexOf(date);
+  if (on && i < 0) { sub.dates.push(date); delete sub.fails[date]; }
+  if (!on && i >= 0) { sub.dates.splice(i, 1); if (!sub.optional) markDone(h, date, false); }   // no longer fully complete
+}
+const toggleSub = (h, sub, date) => setSubDone(h, sub, date, !sub.dates.includes(date));
+function setSubResult(h, sub, date, res) {      // avoid-type sub-habit: succeeded or failed
+  if (res === 'ok') { if (sub.dates.includes(date)) setSubDone(h, sub, date, false); else setSubDone(h, sub, date, true); return; }
+  if (sub.fails[date]) { delete sub.fails[date]; return; }
+  setSubDone(h, sub, date, false); sub.fails[date] = 1;
+}
+function newSub(name, kind, optional) {
+  return { id: String(Date.now()) + Math.random().toString(36).slice(2, 5), name, isSub: true, optional: !!optional,
+    dates: [], fails: {}, progress: {}, mini: {}, ...kindFields(kind) };
+}
+function subAct(h, sub, a) {
+  const d = fmt(today()), wasDone = sub.dates.includes(d);
+  if (a === 'yes') toggleSub(h, sub, d);
+  else if (a === 'inc' || a === 'dec' || a === 'reset') {
+    const c = a === 'reset' ? 0 : Math.max(0, stored(sub, d) + (a === 'inc' ? 1 : -1));
+    setProgress(sub, d, c); setSubDone(h, sub, d, c >= targetOf(sub));
+  }
+  else if (a === 'tstart') { if (!timers[sub.id]) timers[sub.id] = { start: Date.now(), date: d }; }
+  else if (a === 'tpause') commitTimer(sub);
+  else if (a === 'treset') { delete timers[sub.id]; setProgress(sub, d, 0); }
+  else if (a === 'succeed') setSubResult(h, sub, d, 'ok');
+  else if (a === 'failed') setSubResult(h, sub, d, 'fail');
+  else if (a === 'opt') sub.optional = !sub.optional;
+  if (!wasDone && sub.dates.includes(d)) toast(`✓ ${sub.name} done${sub.optional ? ' (optional)' : ''}`, 2500);
+}
+
+// ---------- Timer / counter ----------
+const targetOf = h => h.target || (h.mode === 'timer' ? 25 : 8);   // minutes for timer, times for counter
+const stored = (h, date) => (h.progress && h.progress[date]) || 0;
+function setProgress(h, date, v) { (h.progress ||= {})[date] = v; }
+function liveSecs(h) {
+  const t = timers[h.id];
+  return t ? stored(h, t.date) + (Date.now() - t.start) / 1000 : stored(h, fmt(today()));
+}
+function clock(sec) {
+  const s = Math.max(0, Math.ceil(sec)), hh = Math.floor(s / 3600);
+  return (hh ? hh + ':' : '') + pad(Math.floor(s % 3600 / 60)) + ':' + pad(s % 60);
+}
+function commitTimer(h) {
+  const t = timers[h.id]; if (!t) return;
+  setProgress(h, t.date, liveSecs(h)); delete timers[h.id];
+}
+function markDone(h, date, on) {
+  const i = h.dates.indexOf(date);
+  if (on && i < 0 && canComplete(h, date)) h.dates.push(date);
+  if (!on && i >= 0) h.dates.splice(i, 1);
+}
+function finishTimer(h) {
+  const t = timers[h.id]; if (!t) return;
+  const date = t.date; delete timers[h.id];
+  setProgress(h, date, targetOf(h) * 60);
+  markDone(h, date, true); save();
+  notify('Timer finished', h.name + ' is done!');
+  if (h.dates.includes(date)) celebrate(h);
+  render();
+}
+function tick() {
+  checkReminders();
+  const rebase = Date.now() - lastPersist > 10000;
+  for (const id of Object.keys(timers)) {
+    const h = findItem(id);
+    if (!h) { delete timers[id]; continue; }
+    const el = liveSecs(h), total = targetOf(h) * 60;
+    if (el >= total) { finishTimer(h); continue; }
+    const c = document.querySelector(`[data-tid="${id}"]`);
+    if (c) {
+      c.textContent = clock(total - el);
+      c.parentElement.querySelector('.bar i').style.width = (el / total * 100) + '%';
+    }
+    if (rebase) { setProgress(h, timers[id].date, el); timers[id].start = Date.now(); }
+  }
+  if (rebase) { lastPersist = Date.now(); save(); }
+}
+
+function trackerHtml(h) {
+  const mode = h.mode || 'none', t = targetOf(h);
+  const cfg = `<div class="cfg">
+    <select data-act="mode" title="Tracker type">
+      ${[['none', 'No tracker'], ['timer', 'Timer'], ['counter', 'Counter']]
+        .map(([v, l]) => `<option value="${v}" ${v === mode ? 'selected' : ''}>${l}</option>`).join('')}
+    </select>
+    ${mode !== 'none' ? `<input type="number" min="1" max="999" data-act="target" value="${t}" title="Goal">
+      <span>${mode === 'timer' ? 'min goal' : 'times goal'}</span>` : ''}
+  </div>`;
+  if (mode === 'none') return `<div class="tracker">${cfg}</div>`;
+  if (mode === 'timer') {
+    const running = !!timers[h.id], el = liveSecs(h), total = t * 60;
+    return `<div class="tracker">${cfg}<div class="tbody">
+      <span class="tclock" data-tid="${h.id}">${clock(total - el)}</span>
+      <div class="bar ${el >= total ? 'full' : ''}"><i style="width:${Math.min(100, el / total * 100)}%"></i></div>
+      <button class="primary" data-act="${running ? 'tpause' : 'tstart'}">${running ? 'Pause' : el > 0 && el < total ? 'Resume' : 'Start'}</button>
+      <button data-act="treset">Reset</button>
+      ${window.desktop ? '<button data-act="mini" title="Collapse the app into a small floating timer">⤓ Widget</button>' : ''}
+    </div></div>`;
+  }
+  const c = stored(h, fmt(today()));
+  return `<div class="tracker">${cfg}<div class="tbody">
+    <span class="tclock">${c} / ${t}</span>
+    <div class="bar ${c >= t ? 'full' : ''}"><i style="width:${Math.min(100, c / t * 100)}%"></i></div>
+    <button data-act="cdec" ${c <= 0 ? 'disabled' : ''}>−</button>
+    <button class="primary" data-act="cinc">+1</button>
+    <button data-act="creset">Reset</button>
+  </div></div>`;
+}
+
+// ---------- Rule: a new habit needs every existing habit done on each of the last 7 days ----------
+const RULE_DAYS = 7;
+function ruleStatus() {
+  const days = [];
+  for (let i = RULE_DAYS - 1; i >= 0; i--) {
+    const d = addDays(today(), -i), s = fmt(d);
+    days.push({ d, ok: state.habits.every(h => !scheduled(h, d) || h.dates.includes(s)) });   // days off do not count
+  }
+  return { days, unlocked: state.habits.length === 0 || days.every(x => x.ok) };
+}
+function updateLock() {
+  const { days, unlocked } = ruleStatus();
+  const box = $('lockInfo');
+  const has = state.habits.length > 0;
+  box.hidden = !has;
+  box.classList.toggle('open', unlocked);
+  const okCount = days.filter(x => x.ok).length;
+  box.innerHTML = unlocked
+    ? '<b>New habit unlocked</b> — you completed every habit on each of the last 7 days.'
+    : `<b>New habits are locked.</b> Complete <b>all</b> habits on each of the last ${RULE_DAYS} days (${okCount}/${RULE_DAYS} so far).
+       <div class="pips">${days.map(x => `<div class="pip ${x.ok ? 'ok' : ''}" title="${fmt(x.d)}">${x.d.toLocaleDateString(undefined, { weekday: 'short' })}${x.ok ? ' ✓' : ''}</div>`).join('')}</div>`;
+  for (const id of ['newHabit', 'newType', 'newPrio', 'addHabit']) $(id).disabled = !unlocked;
+  $('newHabit').placeholder = unlocked ? 'New habit (e.g. Read 20 min)' : 'Locked until the 7-day rule is met';
+}
+
+function streaks(dates, h) {
+  // Grace day: one missed scheduled day in a row does not break a streak. Days off are skipped.
+  const set = new Set(dates), allow = state.grace ? 1 : 0, t = today();
+  const sched = d => !h || scheduled(h, d);
+  let cur = 0, misses = 0, d = t;
+  for (let i = 0; i < 4000; i++, d = addDays(d, -1)) {
+    if (set.has(fmt(d))) { cur++; misses = 0; }
+    else if (+d !== +t && sched(d) && ++misses > allow) break;      // today not done yet is not a miss
+  }
+  let best = 0, run = 0, prev = null;
+  for (const s of [...set].sort()) {
+    const dt = parse(s);
+    let gap = 0;
+    if (prev) for (let x = addDays(prev, 1); x < dt; x = addDays(x, 1)) if (sched(x)) gap++;
+    run = prev && gap <= allow ? run + 1 : 1;
+    best = Math.max(best, run); prev = dt;
+  }
+  return { cur, best };
+}
+
+function subCardHtml(x, date) {
+  const kind = cardKind(x), done = x.dates.includes(date), bad = !!x.fails[date], t = targetOf(x), id = x.id;
+  let body;
+  if (done && (kind === 'counter' || kind === 'timer')) body = `<button class="sc-btn done" data-act="s:yes" data-sid="${id}">✓ Done (tap to undo)</button>`;
+  else if (kind === 'yesno') body = `<button class="sc-btn ${done ? 'done' : ''}" data-act="s:yes" data-sid="${id}">${done ? '✓ Done (tap to undo)' : 'Mark done'}</button>`;
+  else if (kind === 'avoid') body = `<button class="sc-btn ${done ? 'done' : ''}" data-act="s:succeed" data-sid="${id}">${done ? '✓ Succeeded (tap to undo)' : '✓ Succeeded today'}</button>
+      <button class="sc-btn bad ${bad ? 'on' : ''}" data-act="s:failed" data-sid="${id}">${bad ? '✗ Failed (tap to undo)' : '✗ Failed today'}</button>`;
+  else if (kind === 'counter') {
+    const c = stored(x, date);
+    body = `<span class="tclock sm">${c} / ${t}</span><div class="bar ${c >= t ? 'full' : ''}"><i style="width:${Math.min(100, c / t * 100)}%"></i></div>
+      <button data-act="s:dec" data-sid="${id}" ${c <= 0 ? 'disabled' : ''}>−</button><button class="primary" data-act="s:inc" data-sid="${id}">+1</button><button data-act="s:reset" data-sid="${id}">Reset</button>`;
+  } else {
+    const running = !!timers[id], el = liveSecs(x), total = t * 60;
+    body = `<span class="tclock sm" data-tid="${id}">${clock(total - el)}</span><div class="bar ${el >= total ? 'full' : ''}"><i style="width:${Math.min(100, el / total * 100)}%"></i></div>
+      <button class="primary" data-act="${running ? 's:tpause' : 's:tstart'}" data-sid="${id}">${running ? 'Pause' : el > 0 && el < total ? 'Resume' : 'Start'}</button><button data-act="s:treset" data-sid="${id}">Reset</button>`;
+  }
+  return `<div class="sub-card ${done ? 'on' : ''} ${x.optional ? 'opt' : ''}" data-sid="${id}">
+    <div class="sc-head">
+      <input class="sc-name" data-act="sname" data-sid="${id}" value="${esc(x.name)}" maxlength="40" title="Rename">
+      <select data-act="skind" data-sid="${id}" title="Card type">${KINDS.map(([k, l]) => `<option value="${k}" ${k === kind ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      ${kind === 'counter' || kind === 'timer' ? `<input type="number" class="sc-goal" min="1" max="999" data-act="starget" data-sid="${id}" value="${t}" title="${kind === 'timer' ? 'Goal in minutes' : 'Goal count'}">` : ''}
+      <label class="sc-opt" title="Optional sub-habits do not count towards the habit or its streak"><input type="checkbox" data-act="s:opt" data-sid="${id}" ${x.optional ? 'checked' : ''}> Optional</label>
+      <button class="icon" data-act="subdel" data-sid="${id}" title="Remove sub-habit">×</button>
+    </div>
+    <div class="sc-body tbody">${body}</div>
+  </div>`;
+}
+function subsHtml(h, date) {
+  const req = h.subs.filter(x => !x.optional), reqDone = req.filter(x => x.dates.includes(date)).length, opt = h.subs.length - req.length;
+  return `<div class="subs">
+    ${h.subs.length ? `<div class="sub-head">Sub-habits today: ${reqDone}/${req.length} required done${opt ? `, ${opt} optional` : ''}. The required ones must be done to complete this habit.</div>` : ''}
+    ${h.subs.map(x => subCardHtml(x, date)).join('')}
+    <div class="sub-add">
+      <input class="sub-new" maxlength="40" placeholder="Add a sub-habit">
+      <select class="sub-kind" title="Card type">${KINDS.map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select>
+      <label class="sub-optl" title="Optional sub-habits do not count towards the habit or its streak"><input type="checkbox" class="sub-opt"> Optional</label>
+      <button class="icon" data-act="subadd">+ Add</button>
+    </div>
+  </div>`;
+}
+
+function calendarHtml(h) {
+  const v = views[h.id] || (views[h.id] = new Date(today().getFullYear(), today().getMonth(), 1));
+  const first = new Date(v.getFullYear(), v.getMonth(), 1);
+  const count = new Date(v.getFullYear(), v.getMonth() + 1, 0).getDate();
+  const t = today(), set = new Set(h.dates);
+  let days = '<div class="day empty"></div>'.repeat(first.getDay());
+  for (let n = 1; n <= count; n++) {
+    const d = new Date(v.getFullYear(), v.getMonth(), n), s = fmt(d);
+    const cls = ['day', set.has(s) && 'done', h.fails[s] && 'fail', !scheduled(h, d) && 'off', +d === +t && 'today', d > t && 'future'].filter(Boolean).join(' ');
+    days += `<button class="${cls}" data-act="day" data-d="${s}" ${d > t ? 'disabled' : ''}>${n}</button>`;
+  }
+  return `<div class="cal">
+    <div class="nav">
+      <button class="icon" data-act="prev">‹</button>
+      <strong>${v.toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</strong>
+      <button class="icon" data-act="next">›</button>
+    </div>
+    <div class="grid">${['S','M','T','W','T','F','S'].map(d => `<div class="dow">${d}</div>`).join('')}</div>
+    <div class="grid" style="margin-top:5px">${days}</div>
+  </div>`;
+}
+
+function render() {
+  renderTip();
+  updateLock();
+  $('sortMode').value = state.sort;
+  $('graceOpt').checked = state.grace;
+  $('soundChk').checked = state.sound !== false;
+  updatePoints();
+  renderNotices();
+  tab === 'cal' ? renderCal() : tab === 'review' ? renderReview() : renderHabits();
+  const inp = document.querySelector('.name-edit');
+  if (inp) { inp.focus(); inp.select(); }
+  if (focusSub) { document.querySelector(`.habit[data-id="${focusSub}"] .sub-new`)?.focus(); focusSub = null; }
+}
+
+function renderHabits() {
+  const list = ordered();
+  const todayStr = fmt(today());
+  const due = list.filter(h => scheduled(h, today()) || h.dates.includes(todayStr));    // habits that count today
+  const doneCount = due.filter(h => h.dates.includes(todayStr)).length;
+  const anchorDone = h => { const a = state.habits.find(x => x.id === h.anchor); return !a || a.dates.includes(todayStr); };
+  const cands = list.filter(h => scheduled(h, today()) && !h.dates.includes(todayStr) && anchorDone(h));
+  const next = cands.find(h => habitSlot(h) === currentSlot()) || cands[0];     // prefer something that fits this part of the day   // first not-done habit whose "after" habit is done
+  $('summary').textContent = list.length
+    ? (due.length ? `${doneCount} of ${due.length} done today` : 'Rest day: nothing scheduled today') + (due.length && doneCount === due.length ? '. All done!' : next ? `. Next up: ${next.name}` : '')
+    : '';
+
+  if (!list.length) { $('list').innerHTML = '<div class="empty-msg">No habits yet. Add one above.</div>'; return; }
+
+  $('list').innerHTML = list.map((h, i) => {
+    const { cur, best } = streaks(h.dates, h);
+    const done = h.dates.includes(todayStr);
+    const open = expanded.has(h.id);
+    const subsDone = h.subs.filter(x => !x.optional && x.dates.includes(todayStr)).length;
+    const blocked = !done && !canComplete(h, todayStr);
+    const sched = scheduled(h, today());
+    const tiny = !done && !blocked && h.tiny && h.type !== 'avoid' ? `<button data-act="tiny" title="${esc(h.tiny)}">Did the tiny version</button>` : '';
+    return `${slotHead(list, i, h)}<div class="card habit p-${h.priority}${!sched && !done ? ' rest' : ''}" data-id="${h.id}">
+      <div class="head">
+        <span class="numtag">#${h.num}</span>
+        ${editingId === h.id
+          ? `<input class="name-edit" maxlength="40" value="${esc(h.name)}">
+             <select class="kind-edit" title="Card type">${KINDS.map(([k, l]) => `<option value="${k}" ${k === cardKind(h) ? 'selected' : ''}>${l}</option>`).join('')}</select>
+             <button class="primary icon" data-act="save">Save</button>
+             <button class="icon" data-act="cancel">Cancel</button>`
+          : `<span class="name">${esc(h.name)}</span>
+             <button class="icon" data-act="edit" title="Rename">✎</button>`}
+        <span class="badge">${h.priority}</span>
+        ${h.type === 'avoid' ? '<span class="badge" style="--prio:var(--muted)">avoid</span>' : ''}
+      </div>
+      <div class="stats"><span>🔥 <b>${cur}</b> current</span><span>🏆 <b>${best}</b> best</span>
+        <span title="Habits took a median of 66 days to feel automatic (range 18 to 254). Progress counts days done.">📈 <b>${h.dates.length}</b>/66 days</span></div>
+      ${linesHtml(h, done, todayStr)}
+      ${h.type === 'avoid' ? '' : subsHtml(h, todayStr, subsDone)}
+      ${done || h.type === 'avoid' ? '' : trackerHtml(h)}
+      <div class="actions">
+        ${h.type === 'avoid' ? avoidBtns(h, todayStr) : `<button class="done-btn ${done ? 'done' : ''}" data-act="check" ${blocked ? 'disabled' : ''}>${done ? (h.mini[todayStr] ? '✓ Done (tiny version). Tap to undo' : '✓ Done today (tap to undo)') : blocked ? `Finish required sub-habits (${subsDone}/${h.subs.filter(x => !x.optional).length})` : sched ? 'Mark done today' : 'Mark done anyway (rest day)'}</button>`}
+        ${tiny}
+        <button data-act="cal">${open ? 'Hide calendar' : 'Calendar'}</button>
+        <button data-act="plan">${planOpen.has(h.id) ? 'Hide plan' : 'Plan'}</button>
+        <div class="tools">
+          <select data-act="prio" title="Priority">
+            ${PRIOS.map(p => `<option value="${p}" ${p === h.priority ? 'selected' : ''}>${p[0].toUpperCase() + p.slice(1)}</option>`).join('')}
+          </select>
+          <input type="number" class="num-in" min="1" max="999" data-act="num" value="${h.num}" title="Order number">
+          <button class="icon" data-act="del" title="Delete">🗑</button>
+        </div>
+      </div>
+      ${open ? calendarHtml(h) : ''}
+      ${planOpen.has(h.id) ? planHtml(h) : ''}
+    </div>`;
+  }).join('');
+}
+
+function toggleDate(h, s) {
+  markDone(h, s, !h.dates.includes(s));
+}
+
+function handle(e) {
+  const el = e.target.closest('[data-act]'); if (!el || el.disabled) return;
+  const card = el.closest('.habit'); if (!card) return;
+  const h = state.habits.find(x => x.id === card.dataset.id); if (!h) return;
+  const act = el.dataset.act;
+
+  if (act === 'check') {
+    const d = fmt(today()), was = h.dates.includes(d);
+    toggleDate(h, d);
+    const now = h.dates.includes(d);
+    if (was && !now) delete h.mini[d];
+    if (!was && now) { commitTimer(h); celebrate(h); }    // stop a running timer once marked done
+  }
+  else if (act === 'tiny') {
+    const d = fmt(today());
+    markDone(h, d, true);
+    if (h.dates.includes(d)) { h.mini[d] = 1; commitTimer(h); celebrate(h, true); }
+  }
+  else if (act === 'dayset') {
+    const i = Number(el.dataset.i), has = h.days.includes(i);
+    if (!has) h.days = [...h.days, i].sort(); else if (h.days.length > 1) h.days = h.days.filter(x => x !== i);   // keep at least one day
+  }
+  else if (act === 'daypreset') {
+    const all = [0, 1, 2, 3, 4, 5, 6], wd = state.profile.workDays;
+    const d = { all, weekdays: [1, 2, 3, 4, 5], weekends: [0, 6], work: wd, off: all.filter(x => !wd.includes(x)) }[el.dataset.p];
+    if (d.length) h.days = [...d];
+  }
+  else if (act === 'plan') planOpen.has(h.id) ? planOpen.delete(h.id) : planOpen.add(h.id);
+  else if (act === 'auto') h.auto.push({ d: fmt(today()), v: Number(el.dataset.v) });
+  else if (act === 'succeed') setResult(h, fmt(today()), 'ok');
+  else if (act === 'failed') setResult(h, fmt(today()), 'fail');
+  else if (act === 'day') {
+    const d = el.dataset.d;
+    if (h.type === 'avoid') setResult(h, d, h.dates.includes(d) || h.fails[d] ? 'fail' : 'ok');   // cycles: nothing, success, failed, nothing
+    else {
+      const was = h.dates.includes(d);
+      toggleDate(h, d);
+      if (!was && h.dates.includes(d)) ding();
+    }
+  }
+  else if (act === 'cal') expanded.has(h.id) ? expanded.delete(h.id) : expanded.add(h.id);
+  else if (act === 'prev' || act === 'next') {
+    const v = views[h.id]; v.setMonth(v.getMonth() + (act === 'next' ? 1 : -1));
+  }
+  else if (act === 'edit') editingId = h.id;
+  else if (act === 'cancel') editingId = null;
+  else if (act === 'save') {
+    const name = card.querySelector('.name-edit').value.trim();
+    if (name) h.name = name;
+    const kindSel = card.querySelector('.kind-edit');
+    if (kindSel) setKind(h, kindSel.value);          // e.g. change a counter into a Yes / No card
+    editingId = null;
+  }
+  else if (act === 'tstart') {
+    if (!timers[h.id]) { timers[h.id] = { start: Date.now(), date: fmt(today()) }; }
+  }
+  else if (act === 'tpause') commitTimer(h);
+  else if (act === 'mini') { widgetKeep.add(h.id); updateWidget(); window.desktop.openWidget(); }
+  else if (act === 'treset') { delete timers[h.id]; setProgress(h, fmt(today()), 0); widgetKeep.delete(h.id); }
+  else if (act === 'cinc' || act === 'cdec' || act === 'creset') {
+    const d = fmt(today()), c = act === 'creset' ? 0 : Math.max(0, stored(h, d) + (act === 'cinc' ? 1 : -1));
+    const was = h.dates.includes(d);
+    setProgress(h, d, c); markDone(h, d, c >= targetOf(h));
+    if (!was && h.dates.includes(d)) celebrate(h);
+  }
+  else if (act.startsWith('s:')) {
+    const sub = h.subs.find(x => x.id === el.dataset.sid);
+    if (!sub) return;
+    subAct(h, sub, act.slice(2));
+  }
+  else if (act === 'subdel') {
+    delete timers[el.dataset.sid];
+    h.subs = h.subs.filter(x => x.id !== el.dataset.sid);
+  }
+  else if (act === 'subadd') {
+    const inp = card.querySelector('.sub-new'), name = inp.value.trim();
+    if (!name) { inp.focus(); return; }
+    h.subs.push(newSub(name, card.querySelector('.sub-kind').value, card.querySelector('.sub-opt').checked));
+    focusSub = h.id;
+  }
+  else if (act === 'del') {
+    if (!confirm(`Delete "${h.name}" and its history?`)) return;
+    delete timers[h.id]; h.subs.forEach(x => delete timers[x.id]); planOpen.delete(h.id); widgetKeep.delete(h.id);
+    state.habits.forEach(x => { if (x.anchor === h.id) x.anchor = ''; });
+    state.habits = state.habits.filter(x => x !== h);
+  }
+  else return;
+  save(); render();
+}
+$('list').addEventListener('click', handle);
+$('list').addEventListener('keydown', e => {
+  if (e.target.classList.contains('sub-new')) {
+    if (e.key === 'Enter') e.target.closest('.habit').querySelector('[data-act=subadd]').click();
+    return;
+  }
+  if (!e.target.classList.contains('name-edit')) return;
+  if (e.key === 'Enter') e.target.closest('.habit').querySelector('[data-act=save]').click();
+  else if (e.key === 'Escape') e.target.closest('.habit').querySelector('[data-act=cancel]').click();
+});
+$('list').addEventListener('change', e => {
+  const act = e.target.dataset.act;
+  if (!['prio', 'mode', 'target', 'num', 'field', 'sname', 'skind', 'starget'].includes(act)) return;
+  const h = state.habits.find(x => x.id === e.target.closest('.habit').dataset.id);
+  if (!h) return;
+  if (['sname', 'skind', 'starget'].includes(act)) {
+    const sub = h.subs.find(x => x.id === e.target.dataset.sid);
+    if (!sub) return;
+    if (act === 'sname') { const v = e.target.value.trim(); if (v) sub.name = v; }
+    else if (act === 'skind') setKind(sub, e.target.value);
+    else sub.target = Math.min(999, Math.max(1, Math.round(Number(e.target.value)) || targetOf(sub)));
+    save(); render();
+    return;
+  }
+  if (act === 'field') {            // plan fields: save quietly so tabbing between boxes keeps focus
+    h[e.target.dataset.f] = e.target.value.trim();
+    if (e.target.dataset.f === 'remind' && h.remind) askNotifications();
+    save();
+    if (['anchor', 'slot', 'remind', 'dur'].includes(e.target.dataset.f)) render();
+    return;
+  }
+  if (act === 'prio') h.priority = e.target.value;
+  else if (act === 'num') h.num = Math.min(999, Math.max(1, Math.round(Number(e.target.value)) || h.num));
+  else if (act === 'mode') { commitTimer(h); h.mode = e.target.value; h.target = h.mode === 'timer' ? 25 : 8; }
+  else h.target = Math.min(999, Math.max(1, Math.round(Number(e.target.value)) || targetOf(h)));
+  save(); render();
+});
+
+function add() {
+  const name = $('newHabit').value.trim(); if (!name || !ruleStatus().unlocked) return;
+  const id = String(Date.now());
+  state.habits.push({ id, name, priority: $('newPrio').value, ...kindFields($('newType').value), dates: [], subs: [], misses: {}, mini: {}, auto: [], fails: {}, days: [0, 1, 2, 3, 4, 5, 6], slot: 'any',
+    num: Math.max(0, ...state.habits.map(x => x.num)) + 1 });
+  planOpen.add(id);                 // invite a quick plan: when, obstacle, tiny version
+  $('newHabit').value = ''; save(); render();
+}
+$('sortMode').onchange = e => { state.sort = e.target.value; save(); render(); };
+$('graceOpt').onchange = e => { state.grace = e.target.checked; save(); render(); };
+$('addHabit').onclick = add;
+$('newHabit').onkeydown = e => { if (e.key === 'Enter') add(); };
+
+// ---------- Calendar view ----------
+let tab = 'habits';
+let calMonth = new Date(today().getFullYear(), today().getMonth(), 1);
+let calSel = fmt(today());
+
+function renderCal() {
+  const t = today(), list = ordered();
+  $('calLabel').textContent = calMonth.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  $('calDows').innerHTML = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'].map(d => `<div class="dow">${d}</div>`).join('');
+  const count = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0).getDate();
+  let html = '<div class="cell empty"></div>'.repeat(calMonth.getDay());
+  for (let n = 1; n <= count; n++) {
+    const d = new Date(calMonth.getFullYear(), calMonth.getMonth(), n), s = fmt(d);
+    const done = list.filter(h => h.dates.includes(s));
+    const due = list.filter(h => scheduled(h, d) || h.dates.includes(s));    // habits that count that day
+    const cls = ['cell', +d === +t && 'today', s === calSel && 'sel', d > t && 'future',
+                 due.length && done.length === due.length && 'all'].filter(Boolean).join(' ');
+    html += `<button class="${cls}" data-d="${s}">
+      <span class="num">${n}</span>
+      <span class="dots">${done.map(h => `<i class="dot ${h.priority}" title="${esc(h.name)}"></i>`).join('')}</span>
+      <span class="cnt">${due.length ? `${done.length}/${due.length}` : ''}</span>
+    </button>`;
+  }
+  $('calGrid').innerHTML = html;
+
+  const d = parse(calSel), future = d > t;
+  $('dayPanel').innerHTML = `<strong>${d.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</strong>`
+    + (list.length ? list.map(h => {
+        const on = h.dates.includes(calSel), blocked = !on && !canComplete(h, calSel);
+        const subs = h.subs.map(x => `<div class="dayrow subrow">
+            <input type="checkbox" data-id="${h.id}" data-sid="${x.id}" ${x.dates.includes(calSel) ? 'checked' : ''} ${future ? 'disabled' : ''}>
+            <span class="nm">${esc(x.name)}${x.optional ? ' <span class="note">(optional)</span>' : ''}</span></div>`).join('');
+        return `<div class="dayrow"><span class="badge" style="--prio:var(--${h.priority})">${h.priority}</span>
+          <span class="nm">${esc(h.name)}${scheduled(h, parse(calSel)) || on ? '' : ' <span class="note">(not scheduled)</span>'}</span>
+          ${h.type === 'avoid' ? `<button data-id="${h.id}" data-res="ok" class="${on ? 'on' : ''}" ${future ? 'disabled' : ''}>${on ? '✓ Success' : 'Success'}</button>
+          <button data-id="${h.id}" data-res="fail" class="${h.fails[calSel] ? 'bad' : ''}" ${future ? 'disabled' : ''}>${h.fails[calSel] ? '✗ Failed' : 'Failed'}</button>` : `<button data-id="${h.id}" class="${on ? 'on' : ''}" ${future || blocked ? 'disabled' : ''}>${on ? '✓ Done' : blocked ? 'Sub-habits pending' : 'Mark done'}</button>`}</div>${subs}`;
+      }).join('') : '<div class="empty-msg">No habits yet.</div>');
+}
+
+function setTab(t) {
+  tab = t;
+  $('habitsView').hidden = t !== 'habits';
+  $('calView').hidden = t !== 'cal';
+  $('infoView').hidden = t !== 'info';
+  $('reviewView').hidden = t !== 'review';
+  $('tipCard').hidden = t === 'info';
+  $('tabHabits').classList.toggle('active', t === 'habits');
+  $('tabCal').classList.toggle('active', t === 'cal');
+  $('tabInfo').classList.toggle('active', t === 'info');
+  $('tabReview').classList.toggle('active', t === 'review');
+  render();
+}
+$('tabHabits').onclick = () => setTab('habits');
+$('tabCal').onclick = () => setTab('cal');
+$('tabInfo').onclick = () => setTab('info');
+$('tabReview').onclick = () => setTab('review');
+$('calPrev').onclick = () => { calMonth.setMonth(calMonth.getMonth() - 1); renderCal(); };
+$('calNext').onclick = () => { calMonth.setMonth(calMonth.getMonth() + 1); renderCal(); };
+$('calToday').onclick = () => { calMonth = new Date(today().getFullYear(), today().getMonth(), 1); calSel = fmt(today()); renderCal(); };
+$('calGrid').addEventListener('click', e => {
+  const b = e.target.closest('[data-d]'); if (!b) return;
+  calSel = b.dataset.d; renderCal();
+});
+$('dayPanel').addEventListener('click', e => {
+  const b = e.target.closest('[data-id]'); if (!b || b.disabled) return;
+  const h = state.habits.find(x => x.id === b.dataset.id);
+  if (!h) return;
+  if (b.dataset.res) { setResult(h, calSel, b.dataset.res); save(); render(); return; }
+  if (b.dataset.sid) {
+    const sub = h.subs.find(x => x.id === b.dataset.sid);
+    if (sub) toggleSub(h, sub, calSel);
+  } else {
+    const was = h.dates.includes(calSel);
+    toggleDate(h, calSel);
+    if (!was && h.dates.includes(calSel)) ding();
+  }
+  save(); render();
+});
+
+
+// ---------- Plan, analyzer, review, reminders, pause ----------
+const REASONS = [
+  ['forgot', 'Forgot', 'Add a cue: set a reminder time in Plan, or put it right after a habit you already do.'],
+  ['time', 'No time', 'Use the tiny version on busy days, or move it to a time you control.'],
+  ['tired', 'Too tired', 'Move it earlier in the day, or do just the tiny version.'],
+  ['hard', 'Too hard or big', 'Shrink it. Make a 2-minute version and build up from there.'],
+  ['mood', "Didn't feel like it", 'Notice the feeling, then start for just 2 minutes. A treat you only get during the habit can help.'],
+  ['routine', 'Routine changed', 'Re-anchor it: pick a new cue in your new routine.'],
+  ['sick', 'Sick or unwell', 'Rest, and restart when you are ready. Forgiving yourself makes starting again easier.'],
+  ['urgent', 'Something urgent', 'Pick a backup time, or use the tiny version on days like this.'],
+  ['chain', 'Previous step failed', 'Make the earlier step smaller so the chain survives.'],
+];
+
+const AVOID_REASONS = [
+  ['craving', 'Strong craving', 'Ride it out next time. Notice where you feel the urge, breathe, and wait 10 minutes: urges rise and fall like waves.'],
+  ['stress', 'Stress or emotions', 'Name the feeling first, then try a different comfort: a walk, a call, or the 🧘 breathing pause.'],
+  ['social', 'Social situation', "Decide your answer in advance with an if-then plan: 'If someone offers it, then I will say…'."],
+  ['bored', 'Boredom', 'Plan a replacement activity for the time of day you usually slip.'],
+  ['auto', 'Autopilot', 'Add friction: take it out of sight and out of reach so the habit has to become a choice.'],
+  ['tired', 'Tired or hungry', 'Protect sleep and regular meals. Cravings can feel stronger when you are tired or hungry.'],
+];
+const reasonOf = k => [...REASONS, ...AVOID_REASONS].find(x => x[0] === k) || [k, k, ''];
+
+// Record a result for a day on an "avoid" habit (succeed or fail). Pressing the active result again clears it.
+function setResult(h, date, res) {
+  const isToday = date === fmt(today());
+  if (res === 'ok') {
+    if (h.dates.includes(date)) { markDone(h, date, false); delete h.mini[date]; return; }
+    delete h.fails[date]; markDone(h, date, true);
+    if (h.dates.includes(date)) isToday ? celebrate(h) : ding();
+  } else {
+    if (h.fails[date]) { delete h.fails[date]; return; }
+    markDone(h, date, false); delete h.mini[date]; h.fails[date] = 1;
+    if (isToday) toast("That's okay. One slip doesn't undo your progress. You can restart right now.", 5000);
+  }
+}
+function avoidBtns(h, ts) {
+  const ok = h.dates.includes(ts), bad = !!h.fails[ts];
+  return `<button class="done-btn ${ok ? 'done' : ''}" data-act="succeed">${ok ? '✓ Succeeded today (tap to undo)' : '✓ Succeeded today'}</button>
+        <button class="fail-btn ${bad ? 'on' : ''}" data-act="failed">${bad ? '✗ Failed today (tap to undo)' : '✗ Failed today'}</button>`;
+}
+
+// ---------- Points ----------
+// High 15, medium 10, low 5 per habit per day. Tiny version earns half. Streak adds up to +6. All habits in a day: +10.
+const BASE = { high: 15, medium: 10, low: 5 };
+const POINT_RULES = 'Each habit done earns 15 (high), 10 (medium) or 5 (low) points, and the tiny version earns half. A streak adds up to +6 per day. Finishing every habit in a day (with 2 or more habits) earns +10. A failed day earns nothing and takes nothing away.';
+const dayBase = (h, date, run) => (h.mini[date] ? Math.ceil(BASE[h.priority] / 2) : BASE[h.priority]) + Math.min(run - 1, 6);
+function perfectBonus(date) {
+  const end = +addDays(parse(date), 1);
+  const existing = state.habits.filter(h => Number(h.id) < end && (scheduled(h, parse(date)) || h.dates.includes(date)));
+  return existing.length >= 2 && existing.every(h => h.dates.includes(date)) ? 10 : 0;
+}
+function runMap(h) {      // streak length (in scheduled days, no misses allowed) ending on each done date
+  const map = {}; let run = 0, prev = null;
+  for (const d of [...new Set(h.dates)].sort()) {
+    const dt = parse(d);
+    let missed = false;
+    if (prev) for (let x = addDays(prev, 1); x < dt; x = addDays(x, 1)) if (scheduled(h, x)) { missed = true; break; }
+    run = prev && !missed ? run + 1 : 1; map[d] = run; prev = dt;
+  }
+  return map;
+}
+function habitDayPoints(h, date) { return dayBase(h, date, runMap(h)[date] || 1); }
+function allPoints() {            // recomputed from the data each time, so undoing a day also removes its points
+  const byDate = {}; let total = 0;
+  const add = (d, n) => { byDate[d] = (byDate[d] || 0) + n; total += n; };
+  for (const h of state.habits) {
+    const runs = runMap(h);
+    for (const d in runs) add(d, dayBase(h, d, runs[d]));
+  }
+  for (const d of new Set(state.habits.flatMap(h => h.dates))) { const b = perfectBonus(d); if (b) add(d, b); }
+  return { total, byDate };
+}
+function updatePoints() {
+  const { total } = allPoints(), level = Math.floor(total / 200) + 1, into = total % 200;
+  $('pts').innerHTML = `<b>⭐ ${total}</b> pts · Level ${level}<div class="lvbar"><i style="width:${into / 2}%"></i></div>`;
+  $('pts').title = `${200 - into} points to level ${level + 1}. ${POINT_RULES}`;
+}
+
+function toast(msg, ms = 3500) {
+  const t = $('toast');
+  t.textContent = msg; t.hidden = false;
+  clearTimeout(toast.id); toast.id = setTimeout(() => { t.hidden = true; }, ms);
+}
+// Success sound: a rising four-note chime with a closing chord, made with the Web Audio API (no sound file needed)
+let audioCtx = null;
+function ding() {
+  if (state.sound === false) return;
+  try {
+    audioCtx ||= new AudioContext();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+    const t0 = audioCtx.currentTime;
+    const note = (freq, at, len, type, vol) => {
+      const osc = audioCtx.createOscillator(), gain = audioCtx.createGain();
+      osc.type = type; osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t0 + at);
+      gain.gain.exponentialRampToValueAtTime(vol, t0 + at + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t0 + at + len);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t0 + at); osc.stop(t0 + at + len + 0.05);
+    };
+    const run = [523.25, 659.25, 783.99, 1046.5];               // C5 E5 G5 C6
+    run.forEach((f, i) => note(f, i * 0.12, 0.5, 'sine', 0.28));
+    run.forEach(f => note(f, 0.5, 1.2, 'triangle', 0.1));       // closing chord
+  } catch {}
+}
+function celebrate(h, tiny) {
+  if (h.isSub) { toast(`✓ ${h.name} done`, 2500); return; }
+  ding();
+  const T = fmt(today()), bonus = perfectBonus(T);
+  toast(`🎉 ${h.name} ${h.type === 'avoid' ? 'success' : 'done'}${tiny ? ' (the tiny version counts!)' : '!'} +${habitDayPoints(h, T)} pts${bonus ? `, plus ${bonus} for a perfect day!` : ''}${h.identity ? ` I am someone who ${h.identity}.` : ''}`, 4500);
+}
+
+function linesHtml(h, done, todayStr) {
+  const out = [];
+  if (habitSlot(h) !== 'any') out.push('🕒 ' + slotLabel(habitSlot(h)));
+  if (h.days && h.days.length < 7) out.push('📅 ' + daysLabel(h) + (scheduled(h, today()) ? '' : ' · rest day today'));
+  const chain = chainOf(h);
+  if (chain.length > 1) out.push('🔗 ' + chain.map(x => (x === h ? `<b>${esc(x.name)}</b>` : esc(x.name)) + (x.dates.includes(todayStr) ? ' ✓' : '')).join(' → '));
+  if (h.when) out.push(`📍 ${esc(h.when)}`);
+  if (h.obstacle || h.action) out.push(`If ${esc(h.obstacle || '…')}, then ${esc(h.action || '…')}`);
+  if (h.treat) out.push(`🎁 ${esc(h.treat)}`);
+  const st = effStart(h);
+  if (st !== null) out.push(`⏰ ${hm(st)}${durOf(h) ? ' to ' + hm(st + durOf(h)) : ''}${h.remind ? '' : ' (starts when the habit before it ends)'}`);
+  let html = out.length ? `<div class="lines">${out.map(x => `<div>${x}</div>`).join('')}</div>` : '';
+  if (h.identity) html += `<div class="identity ${done ? 'on' : ''}">I am someone who ${esc(h.identity)}</div>`;
+  const y = fmt(addDays(today(), -1));
+  if (h.type === 'avoid') {
+    if (h.fails[y] && !done && !h.fails[todayStr])
+      html += `<div class="nudge">Slipped yesterday? One slip is normal. Never slip twice: restart today.</div>`;
+  } else if (!done && !h.dates.includes(y) && Number(h.id) < +today() && scheduled(h, addDays(today(), -1)))
+    html += `<div class="nudge">Missed yesterday? Never miss twice. Be kind to yourself and restart today${h.tiny ? ' with the tiny version' : ' with just 2 minutes'}.</div>`;
+  const last = h.auto[h.auto.length - 1];
+  if (done && Date.now() - Number(h.id) > 7 * 864e5 && (!last || +today() - +parse(last.d) >= 7 * 864e5))
+    html += `<div class="auto">How automatic does this feel now? ${[1, 2, 3, 4, 5].map(v => `<button class="icon" data-act="auto" data-v="${v}">${v}</button>`).join(' ')} <span>(1 = takes effort, 5 = no thought)</span></div>`;
+  return html;
+}
+
+function planHtml(h) {
+  const f = (key, label, ph, type = 'text') =>
+    `<label>${label}<input type="${type}" data-act="field" data-f="${key}" value="${esc(h[key] || '')}" placeholder="${ph}" maxlength="80"></label>`;
+  const last = h.auto[h.auto.length - 1];
+  return `<div class="plan">
+    <div class="daysel">Repeat on
+      ${DAY_NAMES.map((n, i) => `<button class="icon daychip ${h.days.includes(i) ? 'on' : ''}" data-act="dayset" data-i="${i}">${n}</button>`).join('')}
+      <button class="icon" data-act="daypreset" data-p="all">Every day</button>
+      <button class="icon" data-act="daypreset" data-p="weekdays">Weekdays</button>
+      <button class="icon" data-act="daypreset" data-p="weekends">Weekends</button>
+      <button class="icon" data-act="daypreset" data-p="work">Work days</button>
+      <button class="icon" data-act="daypreset" data-p="off">Days off</button>
+    </div>
+    <label>Time of day (Anytime = from start time)<select data-act="field" data-f="slot">
+      ${SLOTS.map(([k, l]) => `<option value="${k}" ${k === h.slot ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+    <label>Do this after<select data-act="field" data-f="anchor"><option value="">Nothing (stands alone)</option>
+      ${state.habits.filter(x => x !== h).map(x => `<option value="${x.id}" ${x.id === h.anchor ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>
+    ${f('when', 'When and where', 'e.g. 7am at my desk')}
+    ${f('obstacle', 'What could get in the way?', 'e.g. I feel too tired')}
+    ${f('action', 'Then I will…', 'e.g. do just 2 minutes')}
+    ${h.type === 'avoid' ? '' : f('tiny', 'Tiny version (counts on bad days)', 'e.g. read one page')}
+    ${f('identity', 'I am someone who…', 'e.g. reads every day')}
+    ${f('treat', 'Pair with a treat', 'e.g. my favorite podcast')}
+    ${f('remind', 'Start time (also your reminder)', '', 'time')}
+    ${f('dur', 'Takes (minutes)', 'e.g. 10', 'number')}
+    <div class="note" style="grid-column:1/-1">Chain habits with <b>Do this after</b>. Leave the start time empty and a chained habit starts when the one before it ends. Reminders need the app to be open.</div>
+    ${last ? `<div class="note">Last automaticity check: ${last.v}/5 on ${last.d}</div>` : ''}
+  </div>`;
+}
+
+// Miss analyzer + fresh start notices, shown above the add box
+function renderNotices() {
+  const t = today(), ts = fmt(t);
+  let html = '';
+  if (suggestion) html += `<div class="card notice sugg"><b>💡 For ${esc(suggestion.name)}:</b> ${esc(suggestion.text)}
+    <div class="reasons"><button data-n="ok">OK</button></div></div>`;
+
+  const items = [];
+  for (const h of ordered()) for (let i = 0; i <= 3; i++) {
+    const d = addDays(t, -i), s = fmt(d);
+    if (Number(h.id) >= +addDays(d, 1)) continue;                 // habit did not exist yet
+    if (h.type === 'avoid') {
+      if (h.fails[s] && !h.misses[s]) items.push({ h, s, d, i, kind: 'why' });
+      else if (i > 0 && scheduled(h, d) && !h.dates.includes(s) && !h.fails[s] && !h.misses[s]) items.push({ h, s, d, i, kind: 'log' });
+    } else if (i > 0 && scheduled(h, d) && !h.dates.includes(s) && !h.misses[s]) items.push({ h, s, d, i, kind: 'why' });
+  }
+  if (items.length) {
+    html += `<div class="card notice"><b>Quick check-in</b> <span class="note">One tap helps you spot patterns and get a fix.</span>
+      ${items.slice(0, 3).map(({ h, s, d, i, kind }) => {
+        const when = i === 0 ? 'today' : i === 1 ? 'yesterday' : d.toLocaleDateString(undefined, { weekday: 'long' });
+        if (kind === 'log') return `<div class="miss" data-id="${h.id}" data-d="${s}"><b>${esc(h.name)}</b>, ${when}: how did it go?
+          <div class="reasons"><button data-n="logok">✓ Succeeded</button><button data-n="logfail">✗ Failed</button><button data-n="skip">Skip</button></div></div>`;
+        const list = h.type === 'avoid' ? AVOID_REASONS : REASONS.filter(r => r[0] !== 'chain' || h.anchor);
+        return `<div class="miss" data-id="${h.id}" data-d="${s}"><b>${esc(h.name)}</b>, ${when}${h.type === 'avoid' ? ': what led to the slip?' : ''}
+          <div class="reasons">${list.map(r => `<button data-n="reason" data-r="${r[0]}">${r[1]}</button>`).join('')}
+          <button data-n="skip">Skip</button></div></div>`;
+      }).join('')}</div>`;
+  }
+
+  if ((t.getDay() === 1 || t.getDate() === 1) && state.freshDismissed !== ts && state.habits.length)
+    html += `<div class="card notice">🌱 <b>Fresh start.</b> A new ${t.getDate() === 1 ? 'month' : 'week'} is a good time to review your habits and shrink any that feel too big.
+      <div class="reasons"><button data-n="review">Open review</button><button data-n="fresh">Got it</button></div></div>`;
+  $('notices').innerHTML = html;
+}
+$('notices').addEventListener('click', e => {
+  const b = e.target.closest('[data-n]'); if (!b) return;
+  const n = b.dataset.n, box = b.closest('.miss');
+  if (n === 'ok') suggestion = null;
+  else if (n === 'fresh') { state.freshDismissed = fmt(today()); }
+  else if (n === 'review') { state.freshDismissed = fmt(today()); setTab('review'); save(); return; }
+  else if (box) {
+    const h = state.habits.find(x => x.id === box.dataset.id);
+    if (!h) return;
+    if (n === 'skip') h.misses[box.dataset.d] = 'skip';
+    else if (n === 'logok') setResult(h, box.dataset.d, 'ok');
+    else if (n === 'logfail') setResult(h, box.dataset.d, 'fail');
+    else { const r = reasonOf(b.dataset.r); h.misses[box.dataset.d] = r[0]; suggestion = { name: h.name, text: r[2] }; }
+  }
+  save(); render();
+});
+
+// Review tab: last 7 days, why habits were missed, and the toughest weekday
+function renderReview() {
+  const list = ordered(), t = today();
+  if (!list.length) { $('reviewBody').innerHTML = '<div class="empty-msg">Add a habit to see your weekly review.</div>'; return; }
+  const days = [...Array(7)].map((_, i) => addDays(t, i - 6));
+  const week = list.map(h => {
+    const n = days.filter(d => h.dates.includes(fmt(d))).length;
+    const sc = days.filter(d => scheduled(h, d) || h.dates.includes(fmt(d))).length;     // days that count
+    return `<div class="rv-row"><span class="rv-name">${esc(h.name)}</span>
+      <span class="rv-days">${days.map(d => `<i class="${h.dates.includes(fmt(d)) ? 'on' : ''} ${scheduled(h, d) ? '' : 'off'}" title="${fmt(d)}${scheduled(h, d) ? '' : ' (not scheduled)'}"></i>`).join('')}</span><b>${n}/${sc}</b></div>`;
+  }).join('');
+
+  const counts = {};
+  list.forEach(h => Object.entries(h.misses).forEach(([d, r]) => { if (r !== 'skip' && parse(d) >= addDays(t, -30)) counts[r] = (counts[r] || 0) + 1; }));
+  const ranked = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  const max = ranked.length ? ranked[0][1] : 1;
+  const reasons = ranked.length
+    ? ranked.map(([r, n]) => `<div class="rv-bar"><span>${reasonOf(r)[1]}</span><i style="width:${n / max * 160}px"></i><span>${n}</span></div>`).join('')
+      + `<p class="note">Most common: <b>${reasonOf(ranked[0][0])[1]}</b>. ${esc(reasonOf(ranked[0][0])[2])}</p>`
+    : '<p class="note">No reasons recorded in the last 30 days. When you miss a habit, the app will ask why.</p>';
+
+  const wd = [0, 0, 0, 0, 0, 0, 0];
+  for (let i = 1; i <= 28; i++) {
+    const d = addDays(t, -i);
+    list.forEach(h => { if (Number(h.id) < +addDays(d, 1) && scheduled(h, d) && !h.dates.includes(fmt(d))) wd[d.getDay()]++; });
+  }
+  const worst = wd.indexOf(Math.max(...wd));
+  const names = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+  const hard = wd[worst] > 0
+    ? `<p>You miss the most on <b>${names[worst]}</b> (${wd[worst]} misses in the last 4 weeks). Try a tiny version or an earlier reminder on that day.</p>`
+    : '<p>No misses in the last 4 weeks. 🎉</p>';
+
+  const pts = allPoints(), week7 = days.reduce((n, d) => n + (pts.byDate[fmt(d)] || 0), 0);
+  $('reviewBody').innerHTML = `<h2 style="margin:0 0 6px;font-size:18px">Weekly review</h2>
+    <div class="rv-sec"><h3>Points</h3><p><b>${week7}</b> points in the last 7 days · <b>${pts.total}</b> all-time · Level ${Math.floor(pts.total / 200) + 1}</p>
+      <p class="note">${POINT_RULES}</p></div>
+    <div class="rv-sec"><h3>Last 7 days</h3>${week}</div>
+    <div class="rv-sec"><h3>Why habits were missed (last 30 days)</h3>${reasons}</div>
+    <div class="rv-sec"><h3>Toughest day</h3>${hard}</div>`;
+}
+
+// Reminders (the app must be open for these to show)
+let lastRemindCheck = 0;
+function checkReminders() {
+  if (Date.now() - lastRemindCheck < 30000) return;
+  lastRemindCheck = Date.now();
+  const n = new Date(), nowMin = n.getHours() * 60 + n.getMinutes(), ts = fmt(today());
+  for (const h of state.habits) {
+    const st = effStart(h);
+    if (st !== null && scheduled(h, today()) && nowMin >= st && h.reminded !== ts && !h.dates.includes(ts)) {
+      h.reminded = ts; save();
+      notify('Time for: ' + h.name, h.tiny ? 'Tiny version: ' + h.tiny : (h.when || 'Just start.'));   // chained habits fire when the one before should end
+    }
+  }
+}
+
+// One-minute breathing pause: in for 4 seconds, out for 6
+let pauseTimer = null;
+function openPause() {
+  $('pauseBox').hidden = false;
+  const c = $('pauseCircle'); c.style.animation = 'none'; void c.offsetWidth; c.style.animation = '';
+  const t0 = Date.now();
+  const update = () => {
+    const sec = Math.floor((Date.now() - t0) / 1000);
+    if (sec >= 60) { $('pauseText').textContent = 'Well done. Now start your habit.'; $('pauseTime').textContent = ''; clearInterval(pauseTimer); return; }
+    $('pauseText').textContent = sec % 10 < 4 ? 'Breathe in…' : 'Breathe out…';
+    $('pauseTime').textContent = (60 - sec) + 's';
+  };
+  clearInterval(pauseTimer); update(); pauseTimer = setInterval(update, 250);
+}
+$('pauseBtn').onclick = openPause;
+$('pauseClose').onclick = () => { clearInterval(pauseTimer); $('pauseBox').hidden = true; };
+
+// ---------- Notifications (desktop and Android) ----------
+function askNotifications() {
+  try { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission(); } catch {}
+}
+function notify(title, body) {
+  try {
+    if (!('Notification' in window) || Notification.permission === 'denied') return;
+    if (navigator.serviceWorker && navigator.serviceWorker.controller) {          // Android needs the service worker to show these
+      navigator.serviceWorker.ready.then(r => r.showNotification(title, { body, icon: 'icons/icon-192.png' }));
+    } else new Notification(title, { body });
+  } catch {}
+}
+
+// ---------- Account and cloud sync (optional; the app works fully without it) ----------
+const FB_VERSION = '10.14.1';
+const cloudCfg = window.FIREBASE_CONFIG || null;
+const isFile = location.protocol === 'file:';          // the desktop app: popups for Google sign-in are not available there
+let fbAuth = null, fbDb = null, fbUser = null, fbUnsub = null, syncTimer = null;
+let syncStatus = cloudCfg ? 'offline' : 'off';          // off | offline | signedout | syncing | synced | error
+let acctMsg = '';
+
+const loadScript = src => new Promise((ok, fail) => {
+  const el = document.createElement('script');
+  el.src = src; el.onload = ok; el.onerror = () => fail(new Error('Could not load ' + src));
+  document.head.appendChild(el);
+});
+async function initCloud() {
+  if (!cloudCfg || fbAuth) return;
+  try {
+    if (!window.firebase) for (const m of ['app', 'auth', 'firestore'])
+      await loadScript(`https://www.gstatic.com/firebasejs/${FB_VERSION}/firebase-${m}-compat.js`);
+    firebase.initializeApp(cloudCfg);
+    fbAuth = firebase.auth(); fbDb = firebase.firestore();
+    syncStatus = 'signedout';
+    fbAuth.onAuthStateChanged(onUser);
+  } catch { syncStatus = 'offline'; }
+  renderAcct();
+}
+window.addEventListener('online', initCloud);
+
+const userRef = () => fbDb.collection('users').doc(fbUser.uid);
+function onUser(user) {
+  fbUser = user;
+  if (fbUnsub) { fbUnsub(); fbUnsub = null; }
+  if (!user) { syncStatus = 'signedout'; renderAcct(); return; }
+  syncStatus = 'syncing'; renderAcct();
+  let first = true;
+  fbUnsub = userRef().onSnapshot(doc => {
+    if (doc.metadata.hasPendingWrites) return;           // our own write
+    if (first) { first = false; firstSync(user, doc); }
+    else if (doc.exists) applyIfNewer(doc.data());
+  }, () => { syncStatus = 'error'; renderAcct(); });
+}
+// Replace this device's data with the account's saved copy
+function adopt(remote) {
+  let rs; try { rs = JSON.parse(remote.data); } catch { return; }
+  state = normalize(rs);
+  state.syncUid = fbUser.uid; state.updatedAt = remote.updatedAt;
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+  syncStatus = 'synced'; render(); renderAcct();
+}
+function applyIfNewer(remote) {
+  if (remote.updatedAt > (state.updatedAt || 0)) { adopt(remote); return true; }
+  return false;
+}
+function firstSync(user, doc) {
+  const remote = doc.exists ? doc.data() : null;
+  if (!remote) { state.syncUid = user.uid; pushNow(); return; }
+  if (state.syncUid === user.uid) {                       // same account as before: newest copy wins
+    if (!applyIfNewer(remote) && (state.updatedAt || 0) > remote.updatedAt) pushNow(); else { syncStatus = 'synced'; renderAcct(); }
+  } else if (state.habits.length === 0) adopt(remote);
+  else if (confirm('This device already has habits, and your account has saved data.\n\nOK = use the data saved in your account (replaces this device).\nCancel = keep this device and overwrite the account.')) adopt(remote);
+  else { state.syncUid = user.uid; pushNow(); }
+}
+function scheduleSync() {
+  if (!fbUser || !state.syncUid || state.syncUid !== fbUser.uid) return;
+  syncStatus = 'syncing'; renderAcct();
+  clearTimeout(syncTimer); syncTimer = setTimeout(pushNow, 1500);
+}
+function pushNow() {
+  if (!fbUser) return;
+  clearTimeout(syncTimer);
+  if (!state.updatedAt) state.updatedAt = Date.now();
+  try { localStorage.setItem(KEY, JSON.stringify(state)); } catch {}
+  syncStatus = 'syncing'; renderAcct();
+  userRef().set({ data: JSON.stringify(state), updatedAt: state.updatedAt })
+    .then(() => { syncStatus = 'synced'; renderAcct(); })
+    .catch(() => { syncStatus = 'error'; renderAcct(); });
+}
+
+const STATUS_TEXT = {
+  synced: '✓ Saved to your account', syncing: 'Syncing…', error: 'Sync problem. Check your connection; changes stay on this device.',
+  offline: 'Offline. Changes are saved on this device and will sync when you are back online.',
+};
+function renderAcct() {
+  $('acctBtn').textContent = fbUser ? '☁ ' + (fbUser.email || 'Account') : '☁ Sign in';
+  const body = $('acctBody');
+  if (!cloudCfg) {
+    body.innerHTML = `<p>Cloud sync is not set up yet. Your habits are saved on this device only.</p>
+      <p class="note">To sign in with Google or email and keep your progress across devices, create a free Firebase project and paste its config into <b>firebase-config.js</b>. The steps are in <b>SETUP.md</b>.</p>`;
+    return;
+  }
+  if (fbUser) {
+    body.innerHTML = `<p>Signed in as <b>${esc(fbUser.email || fbUser.displayName || 'your account')}</b></p>
+      <p class="${syncStatus === 'synced' ? 'ok' : 'note'}">${STATUS_TEXT[syncStatus] || ''}</p>
+      <div class="row2"><button data-a="out">Sign out</button><button data-a="del">Delete account</button></div>
+      <p class="msg ${acctMsg.startsWith('✓') ? 'ok' : ''}">${esc(acctMsg)}</p>
+      ${isFile ? '' : '<p class="note"><a target="_blank" rel="noopener" href="privacy.html">Privacy policy</a></p>'}`;
+    return;
+  }
+  if (!fbAuth) { body.innerHTML = `<p class="note">${syncStatus === 'offline' ? 'Cannot reach the sign-in service. Check your connection and try again.' : 'Loading…'}</p>`; return; }
+  const social = isFile
+    ? '<p class="note">Google sign-in works in the web and phone version. In this desktop app, use email and password.</p>'
+    : `<div class="stack">${(window.STREAK_PROVIDERS || []).map(p => `<button data-a="social" data-p="${p}">Continue with ${p === 'google' ? 'Google' : p === 'microsoft' ? 'Microsoft (Outlook)' : p}</button>`).join('')}</div><hr>`;
+  body.innerHTML = `${social}
+    <input id="acctEmail" type="email" placeholder="Email" autocomplete="email">
+    <input id="acctPass" type="password" placeholder="Password (6+ characters)" autocomplete="current-password">
+    <div class="row2"><button class="primary" data-a="in">Sign in</button><button data-a="up">Create account</button><button data-a="reset">Forgot password?</button></div>
+    <div class="msg ${acctMsg.startsWith('✓') ? 'ok' : ''}">${esc(acctMsg)}</div>
+    ${isFile ? '' : '<p class="note"><a target="_blank" rel="noopener" href="privacy.html">Privacy policy</a></p>'}`;
+}
+$('acctBody').addEventListener('click', async e => {
+  const b = e.target.closest('[data-a]'); if (!b || !fbAuth) return;
+  const a = b.dataset.a, email = ($('acctEmail') || {}).value, pass = ($('acctPass') || {}).value;
+  acctMsg = '';
+  try {
+    if (a === 'out') await fbAuth.signOut();
+    else if (a === 'del') {
+      if (!confirm('Delete your account and the habits saved online? Habits on this device are kept. This cannot be undone.')) return;
+      state.syncUid = '';                       // stop syncing first so nothing is re-uploaded
+      clearTimeout(syncTimer);
+      await userRef().delete();                 // saved habits
+      try { await fbUser.delete(); acctMsg = ''; }   // the login itself
+      catch (err) {
+        acctMsg = err.code === 'auth/requires-recent-login'
+          ? 'Your saved data was deleted. For security, sign out, sign in again, and press Delete account once more to remove the login.'
+          : (err.message || 'Could not delete the login.');
+      }
+    }
+    else if (a === 'social') {
+      const prov = b.dataset.p === 'microsoft' ? new firebase.auth.OAuthProvider('microsoft.com') : new firebase.auth.GoogleAuthProvider();
+      await fbAuth.signInWithPopup(prov);
+    }
+    else if (a === 'in') await fbAuth.signInWithEmailAndPassword(email, pass);
+    else if (a === 'up') await fbAuth.createUserWithEmailAndPassword(email, pass);
+    else if (a === 'reset') { await fbAuth.sendPasswordResetEmail(email); acctMsg = '✓ Password reset email sent. Check your inbox.'; }
+  } catch (err) { acctMsg = (err.message || 'Something went wrong').replace('Firebase: ', ''); }
+  renderAcct();
+});
+$('acctBtn').onclick = () => { acctMsg = ''; renderAcct(); $('acctBox').hidden = false; };
+$('acctClose').onclick = () => { $('acctBox').hidden = true; };
+renderAcct();
+initCloud();
+
+if ('serviceWorker' in navigator && location.protocol.startsWith('http')) navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// ---------- Tips and facts ----------
+// kind 'tip' = advice paraphrased from a book or practitioner; 'fact' = a published research finding.
+const TIPS = [
+  // Habit tips from books
+  { k: 'tip', c: 'habits', t: "Make it tiny. Shrink a habit until it takes under two minutes. The goal is to show up, not to perform.", s: "Atomic Habits, James Clear (2018): the two-minute rule" },
+  { k: 'tip', c: 'habits', t: "Stack it: 'After I [current habit], I will [new habit].' Use something you already do every day as the cue.", s: "Atomic Habits (habit stacking); Tiny Habits, BJ Fogg (anchoring)" },
+  { k: 'tip', c: 'habits', t: "Never miss twice. One slip is an accident; two is the start of a new habit.", s: "Atomic Habits, James Clear (2018)" },
+  { k: 'tip', c: 'habits', t: "Focus on who you want to become, not just what you want to achieve. Each check-in is a vote for that identity.", s: "Atomic Habits, James Clear (2018): identity-based habits" },
+  { k: 'tip', c: 'habits', t: "Design your space. Put the cue where you will see it, and add friction to habits you want to avoid.", s: "Atomic Habits (environment design); Good Habits, Bad Habits, Wendy Wood (2019)" },
+  { k: 'tip', c: 'habits', t: "Celebrate right after you finish, even with a small 'Yes!'. The good feeling is what helps the habit stick.", s: "Tiny Habits, BJ Fogg (2019)" },
+  { k: 'tip', c: 'habits', t: "A behavior happens when motivation, ability and a prompt come together. If it isn't happening, make it easier or add a better prompt instead of waiting to feel motivated.", s: "Tiny Habits, BJ Fogg (2019): Fogg Behavior Model" },
+  { k: 'tip', c: 'habits', t: "Keep the cue and the reward, and change the routine. Work out what the old habit gives you, then get it another way.", s: "The Power of Habit, Charles Duhigg (2012)" },
+  { k: 'tip', c: 'habits', t: "Look for a keystone habit: one change, like regular exercise or planning your day, that tends to pull other habits along with it.", s: "The Power of Habit, Charles Duhigg (2012)" },
+  { k: 'tip', c: 'habits', t: "Aim for the Goldilocks zone. A task at the edge of your ability stays interesting. Too easy is boring and too hard is discouraging.", s: "Atomic Habits, James Clear (2018)" },
+  { k: 'tip', c: 'habits', t: "Habits are tied to context. Moving, a new job or a new schedule breaks old cues, which makes it a good moment to start a new routine.", s: "Good Habits, Bad Habits, Wendy Wood (2019)" },
+  { k: 'tip', c: 'habits', t: "Use the Behaviour Change Wheel's three questions on a habit you keep missing: Do you have the capability, the opportunity, and the motivation?", s: "COM-B model, Michie, van Stralen & West (2011)" },
+  // Procrastination tips
+  { k: 'tip', c: 'procrastination', t: "Procrastination is mostly about avoiding a bad feeling, not about poor time management. Name the feeling (boredom, anxiety, self-doubt), then take one small step anyway.", s: "Research by Tim Pychyl and Fuschia Sirois on procrastination and mood" },
+  { k: 'tip', c: 'procrastination', t: "Make the start laughably small: 'open the document', 'put on the shoes'. Starting is the hardest part.", s: "Tiny Habits (Fogg); Atomic Habits (Clear)" },
+  { k: 'tip', c: 'procrastination', t: "Pair a 'want' with a 'should': an audiobook or show you only allow yourself during the habit.", s: "Temptation bundling, Milkman, Minson & Volpp (2014)" },
+  { k: 'tip', c: 'procrastination', t: "Plan for your likely obstacle with an if-then rule: 'If I'm too tired after work, then I'll do just 2 minutes.'", s: "Implementation intentions, Gollwitzer (1999); WOOP, Gabriele Oettingen" },
+  { k: 'tip', c: 'procrastination', t: "Forgive yourself for the miss and restart. Guilt tends to make delay worse, not better.", s: "Wohl, Pychyl & Bennett (2010)" },
+  { k: 'tip', c: 'procrastination', t: "Use a fresh start. Mondays, the first of the month and birthdays make natural restart points.", s: "Dai, Milkman & Riis (2014): the fresh start effect" },
+  // Mindfulness tips
+  { k: 'tip', c: 'mindfulness', t: "When an urge hits, get curious. Where do you feel it in your body? Watch it rise and fall like a wave instead of obeying it.", s: "Judson Brewer, The Craving Mind (2017): mindfulness and craving" },
+  { k: 'tip', c: 'mindfulness', t: "RAIN: Recognize what is happening, Allow it to be there, Investigate with kindness, Nurture yourself.", s: "Michele McDonald; popularized by Tara Brach" },
+  { k: 'tip', c: 'mindfulness', t: "After a lapse, talk to yourself like a friend: be kind to yourself, remember that everyone struggles, and notice the feeling without judging it.", s: "Kristin Neff on self-compassion" },
+  { k: 'tip', c: 'mindfulness', t: "Before you start, take one slow breath and notice what you are about to do. A pause turns autopilot into a choice.", s: "Mindfulness practice, after Jon Kabat-Zinn (MBSR)" },
+  { k: 'tip', c: 'mindfulness', t: "Picture the obstacle, not only the success. Imagine your wish, then what stands in the way, then make a plan for it. Only imagining success can lower effort.", s: "WOOP (Wish, Outcome, Obstacle, Plan), Gabriele Oettingen" },
+  // Research facts
+  { k: 'fact', c: 'habits', t: "In a study of 96 volunteers, a new daily habit took a median of 66 days to feel automatic. The range was 18 to 254 days, so be patient.", s: "Lally et al. (2010), European Journal of Social Psychology" },
+  { k: 'fact', c: 'habits', t: "In that same study, missing a single day did not materially affect habit formation. One slip does not erase your progress.", s: "Lally et al. (2010), European Journal of Social Psychology" },
+  { k: 'fact', c: 'habits', t: "In a diary study with students, about 43% of everyday behaviors were habitual: done almost daily, in the same place.", s: "Wood, Quinn & Kashy (2002), Journal of Personality and Social Psychology" },
+  { k: 'fact', c: 'habits', t: "Pooling 94 tests, if-then plans ('If X happens, I will do Y') had a medium-to-large effect on reaching goals (d = 0.65).", s: "Gollwitzer & Sheeran (2006), Advances in Experimental Social Psychology" },
+  { k: 'fact', c: 'habits', t: "A review of 138 experiments (about 20,000 people) found that monitoring your progress helps you reach goals, and helps more when you write it down or share it.", s: "Harkin et al. (2016), Psychological Bulletin" },
+  { k: 'fact', c: 'habits', t: "A car wash gave out loyalty cards: 8 stamps needed, or 10 stamps needed with 2 already stamped. 34% of the head-start group finished versus 19%, with the same effort required.", s: "Nunes & Dreze (2006): the endowed progress effect" },
+  { k: 'fact', c: 'procrastination', t: "A meta-analysis of 691 correlations found the strongest predictors of procrastination were how unpleasant the task is, how far off the reward is, low self-belief and impulsiveness.", s: "Steel (2007), Psychological Bulletin" },
+  { k: 'fact', c: 'procrastination', t: "Students who forgave themselves for procrastinating before a first exam procrastinated less before the next one.", s: "Wohl, Pychyl & Bennett (2010), Personality and Individual Differences" },
+  { k: 'fact', c: 'procrastination', t: "People who could only hear a gripping audiobook at the gym visited 51% more often in the early weeks than a control group.", s: "Milkman, Minson & Volpp (2014), Management Science (226 participants)" },
+  { k: 'fact', c: 'procrastination', t: "Gym visits, diet searches and goal commitments all rise after a new week, month, year or birthday.", s: "Dai, Milkman & Riis (2014), Management Science" },
+  { k: 'fact', c: 'mindfulness', t: "In an app-based study of 2,250 volunteers, people's minds wandered about 47% of the time, and wandering went with lower happiness.", s: "Killingsworth & Gilbert (2010), Science" },
+  { k: 'fact', c: 'mindfulness', t: "In one smoking trial, mindfulness training had 31% abstinence versus 6% for a standard program at a 4-month follow-up.", s: "Brewer et al. (2011), Drug and Alcohol Dependence" },
+  { k: 'fact', c: 'mindfulness', t: "Researchers urge caution: much mindfulness research is small or lacks good controls, so treat big claims with care.", s: "Van Dam et al. (2018), Perspectives on Psychological Science" },
+];
+const TOPIC_LABEL = { habits: 'Habits', procrastination: 'Procrastination', mindfulness: 'Mindfulness' };
+let tipIdx = Math.floor(Math.random() * TIPS.length);   // a different tip each time the app opens
+let tipTimer = null;
+
+function renderTip() {
+  const f = state.tipFilter;
+  const list = TIPS.filter(x => f === 'all' || x.k === f || x.c === f);
+  const x = list[tipIdx % list.length];
+  $('tipKind').textContent = x.k === 'fact' ? 'Research fact' : 'Tip';
+  $('tipKind').className = 'chip ' + x.k;
+  $('tipTopic').textContent = TOPIC_LABEL[x.c];
+  $('tipText').textContent = x.t;
+  $('tipSrc').textContent = x.s;
+  $('tipFilter').value = f;
+}
+function renderInfoTips() {
+  $('infoTips').innerHTML = Object.keys(TOPIC_LABEL).map(c => `<h3>${TOPIC_LABEL[c]}</h3>` +
+    TIPS.filter(x => x.c === c).map(x => `<div class="entry"><span class="chip ${x.k}">${x.k === 'fact' ? 'Research' : 'Book advice'}</span>
+      <div>${esc(x.t)}</div><span class="src">${esc(x.s)}</span></div>`).join('')).join('');
+}
+renderInfoTips();
+function nextTip() { tipIdx++; renderTip(); }
+function startTipTimer() { clearInterval(tipTimer); tipTimer = setInterval(nextTip, 5 * 60 * 1000); }   // rotate every 5 minutes
+$('tipNext').onclick = () => { nextTip(); startTipTimer(); };
+startTipTimer();
+$('tipFilter').onchange = e => { state.tipFilter = e.target.value; save(); renderTip(); };
+
+// ---------- My day window ----------
+function renderDay() {
+  const p = state.profile;
+  $('dayBody').innerHTML = `<div class="dayform">
+    <label class="wide">I am a…<select id="pfPreset">${Object.entries(PRESETS).map(([k, v]) => `<option value="${k}" ${k === p.preset ? 'selected' : ''}>${v.label}</option>`).join('')}</select></label>
+    <div class="wide"><div class="note" style="margin-bottom:6px">Work or class days</div>
+      <div class="daysel2">${DAY_NAMES.map((n, i) => `<button class="${p.workDays.includes(i) ? 'on' : ''}" data-pd="${i}">${n}</button>`).join('')}</div></div>
+    <label>Wake up<input type="time" id="pfWake" value="${p.wake}"></label>
+    <label>Go to sleep<input type="time" id="pfSleep" value="${p.sleep}"></label>
+    <label>Work or class starts<input type="time" id="pfStart" value="${p.workStart}"></label>
+    <label>Work or class ends<input type="time" id="pfEnd" value="${p.workEnd}"></label>
+    <p class="note wide">Morning ${p.wake} to ${p.workStart} · ${isWorkDay(today()) ? 'Work hours' : 'Daytime'} ${p.workStart} to ${p.workEnd} · Evening ${p.workEnd} to ${p.sleep} · Night ${p.sleep} to ${p.wake}</p>
+  </div>`;
+}
+function profileChanged() { save(); updateDate(); render(); renderDay(); }
+$('dayBody').addEventListener('change', e => {
+  const p = state.profile;
+  if (e.target.id === 'pfPreset') {
+    const pre = PRESETS[e.target.value];
+    state.profile = { ...p, preset: e.target.value, ...(pre.workDays ? { workDays: [...pre.workDays], wake: pre.wake, workStart: pre.workStart, workEnd: pre.workEnd, sleep: pre.sleep } : {}) };
+  } else {
+    const f = { pfWake: 'wake', pfSleep: 'sleep', pfStart: 'workStart', pfEnd: 'workEnd' }[e.target.id];
+    if (!f || !e.target.value) return;
+    p[f] = e.target.value; p.preset = 'custom';
+  }
+  profileChanged();
+});
+$('dayBody').addEventListener('click', e => {
+  const b = e.target.closest('[data-pd]'); if (!b) return;
+  const p = state.profile, i = Number(b.dataset.pd);
+  p.workDays = p.workDays.includes(i) ? p.workDays.filter(x => x !== i) : [...p.workDays, i].sort();
+  p.preset = 'custom';
+  profileChanged();
+});
+$('dayBtn').onclick = () => { renderDay(); $('dayBox').hidden = false; };
+$('dayClose').onclick = () => { $('dayBox').hidden = true; };
+
+// ---------- Desktop timer widget (the small always-on-top window) ----------
+const widgetKeep = new Set();          // timer habits that stay in the widget while paused
+function updateWidget() {
+  if (!window.desktop) return;
+  const ts = fmt(today());
+  const items = state.habits
+    .filter(h => h.mode === 'timer' && widgetKeep.has(h.id) && !h.dates.includes(ts))
+    .map(h => {
+      const total = targetOf(h) * 60, remaining = Math.max(0, total - liveSecs(h)), running = !!timers[h.id];
+      return { id: h.id, name: h.name, total, remaining, running, endAt: running ? Date.now() + remaining * 1000 : 0 };
+    });
+  window.desktop.timerState({ items });
+}
+if (window.desktop) {
+  window.desktop.onWidgetClosed(() => widgetKeep.clear());     // closing the widget un-pins its timers
+  window.desktop.onWidgetAction(({ action, id }) => {           // buttons pressed in the widget
+    const h = state.habits.find(x => x.id === id); if (!h) return;
+    const d = fmt(today());
+    if (action === 'pause') commitTimer(h);
+    else if (action === 'resume') { if (!timers[h.id]) timers[h.id] = { start: Date.now(), date: d }; widgetKeep.add(h.id); }
+    else if (action === 'reset') { delete timers[h.id]; setProgress(h, d, 0); widgetKeep.delete(h.id); }
+    else if (action === 'done') {
+      commitTimer(h); const was = h.dates.includes(d); markDone(h, d, true);
+      if (!was && h.dates.includes(d)) celebrate(h);
+    }
+    save(); render(); updateWidget();
+  });
+}
+$('soundChk').onchange = e => { state.sound = e.target.checked; save(); if (state.sound) ding(); };
+
+// Shows today's day and date, and refreshes everything when midnight passes while the app is open
+let shownDay = '', shownSlot = '';
+function updateDate() {
+  const t = today(), key = fmt(t);
+  const cs = currentSlot();
+  $('todayLabel').innerHTML = `<b>${t.toLocaleDateString(undefined, { weekday: 'long' })}</b>, ${t.toLocaleDateString(undefined, { day: 'numeric', month: 'long', year: 'numeric' })}`
+    + ` · ${isWorkDay(t) ? 'Work day' : 'Day off'} · Now: ${slotLabel(cs)}`;
+  if (shownDay && shownDay !== key) { tipIdx++; render(); }       // a new day started
+  else if (shownSlot && shownSlot !== cs) render();                // the part of the day changed
+  shownDay = key; shownSlot = cs;
+}
+setInterval(updateDate, 30000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) updateDate(); });
+updateDate();
+
+window.addEventListener('beforeunload', () => {
+  allItems().forEach(h => { if (timers[h.id]) { setProgress(h, timers[h.id].date, liveSecs(h)); timers[h.id].start = Date.now(); } });
+  save();
+});
+setInterval(() => { try { tick(); } catch (e) { console.error(e); } }, 500);
+setInterval(() => { try { updateWidget(); } catch (e) { console.error(e); } }, 500);
+render();
+</script>
+</body>
+</html>

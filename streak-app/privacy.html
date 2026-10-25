@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Streak: Privacy Policy</title>
+<style>
+  body { font: 16px/1.55 system-ui, -apple-system, Segoe UI, sans-serif; color: #1d2433; background: #f6f7fb; margin: 0; }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 60px; }
+  h1 { font-size: 26px; } h2 { font-size: 19px; margin-top: 28px; }
+  a { color: #d9620a; }
+  .box { background: #fff; border: 1px solid #e5e8f0; border-radius: 14px; padding: 4px 18px 18px; }
+  .todo { background: #fff4e5; border: 1px dashed #ff7a1a; border-radius: 10px; padding: 8px 12px; font-size: 14px; }
+  @media (prefers-color-scheme: dark) {
+    body { background: #12141a; color: #eceff6; } .box { background: #1b1e27; border-color: #2a2e3b; } a { color: #ff9a3c; }
+    .todo { background: #3a2a1b; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <h1>Streak: Privacy Policy</h1>
+  <p>Last updated: <span id="d"></span></p>
+  <p class="todo">Before publishing: replace <b>[YOUR CONTACT EMAIL]</b> below with an address you check, and add your name or business name where it says <b>[YOUR NAME]</b>. Then delete this note.</p>
+
+  <div class="box">
+    <h2>What Streak is</h2>
+    <p>Streak is a habit tracker. It is provided by [YOUR NAME]. You can use it without an account, and then everything stays on your device.</p>
+
+    <h2>What we collect</h2>
+    <ul>
+      <li><b>Habit data</b> you enter: habit names, check-ins, notes you write in plans, points, and your settings. On your device this is stored in the app's local storage.</li>
+      <li><b>Account details</b>, only if you choose to sign in: your email address and, for Google or Microsoft sign-in, the name and email those services share with us. Passwords are handled by Firebase Authentication and are never visible to us.</li>
+      <li><b>Cloud copy of your habit data</b>, only if you sign in, so you can use the same habits on several devices.</li>
+    </ul>
+    <p>We do not collect your location, contacts, photos or advertising ID. We do not show ads, we do not use analytics trackers, and we do not sell or share your data for advertising.</p>
+
+    <h2>How the data is used</h2>
+    <p>Only to run the app: showing your habits, calculating streaks and points, and syncing your data between your devices.</p>
+
+    <h2>Who processes it</h2>
+    <p>Signed-in data is stored with Google Firebase (Authentication and Cloud Firestore). Google acts as a service provider. Data is encrypted in transit. See <a href="https://firebase.google.com/support/privacy" target="_blank" rel="noopener">Firebase privacy information</a>.</p>
+
+    <h2>Reminders and notifications</h2>
+    <p>If you set a reminder time, the app may ask permission to show notifications. These are created on your device.</p>
+
+    <h2 id="delete">Deleting your account and data</h2>
+    <ul>
+      <li><b>In the app:</b> open <i>Sign in / your email</i> at the top, then press <i>Delete account</i>. This removes your saved habits from our servers and deletes your login. Habits on your device stay on your device until you uninstall the app or clear its data.</li>
+      <li><b>Without the app:</b> email <b>[YOUR CONTACT EMAIL]</b> from the address you signed up with, with the subject "Delete my Streak account", and we will delete your account and saved data within 30 days. You can also open the web version of Streak in a browser, sign in, and use <i>Delete account</i> there.</li>
+    </ul>
+    <p>We keep no copies of your habit data after deletion, other than short-term backups that Google may hold for a limited period.</p>
+
+    <h2>Children</h2>
+    <p>Streak is not directed at children under 13, and we do not knowingly collect their data.</p>
+
+    <h2>Changes</h2>
+    <p>If this policy changes, the date above will change and, for important changes, the app will tell you.</p>
+
+    <h2>Contact</h2>
+    <p>[YOUR CONTACT EMAIL]</p>
+  </div>
+</main>
+<script>document.getElementById('d').textContent = new Date().toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });</script>
+</body>
+</html>
