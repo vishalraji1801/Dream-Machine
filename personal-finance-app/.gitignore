@@ -1,0 +1,9 @@
+node_modules/
+dist/
+release/
+build/icon.png
+backend/data/
+*.db
+*.db-shm
+*.db-wal
+.DS_Store

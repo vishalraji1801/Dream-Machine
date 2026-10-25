@@ -1,0 +1,65 @@
+{
+  "name": "lenden-portfolio-tracker",
+  "private": true,
+  "version": "4.0.0",
+  "type": "module",
+  "description": "Personal finance tracker — everyday money, LenDen P2P portfolio, spending and loans",
+  "author": "Vishal",
+  "main": "desktop/main.cjs",
+  "workspaces": [
+    "backend",
+    "frontend"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c cyan,magenta \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "npm run dev -w backend",
+    "dev:web": "npm run dev -w frontend",
+    "build": "npm run build -w frontend",
+    "start": "npm run start -w backend",
+    "app": "npm run build && electron .",
+    "app:icon": "node desktop/make-icon.mjs",
+    "app:rebuild": "electron-builder install-app-deps",
+    "dist": "npm run build && npm run app:icon && electron-builder --win"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "concurrently": "^9.1.2",
+    "electron": "^43.4.1",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.vishal.lendentracker",
+    "productName": "Personal Finance App",
+    "asar": false,
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "desktop/**/*",
+      "backend/src/**/*",
+      "backend/package.json",
+      "frontend/dist/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Personal Finance App"
+    }
+  },
+  "dependencies": {
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
